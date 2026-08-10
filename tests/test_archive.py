@@ -16,6 +16,111 @@ from famly_fetch.archive import (
 
 
 class ArchiveExporterTests(unittest.TestCase):
+    def test_explicit_archive_child_controls_title_and_survives_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            exporter.set_archive_children([("child-riley", "Riley")])
+            exporter.add_entry(
+                entry_id="journey:shared-observation",
+                source="journey",
+                kind="observation",
+                date="2024-01-01T10:00:00Z",
+                author="Rachel",
+                children=[
+                    {"id": "child-riley", "name": "Riley"},
+                    {"id": "child-rowan", "name": "Rowan"},
+                ],
+                text="A shared observation",
+            )
+            exporter.save()
+
+            payload = json.loads((root / "archive.json").read_text())
+            self.assertEqual(
+                payload["archive_children"],
+                [{"id": "child-riley", "name": "Riley"}],
+            )
+            self.assertTrue(
+                (root / "archive.md").read_text().startswith("# Riley's Famly Archive")
+            )
+            self.assertNotIn("Child:", (root / "archive.md").read_text())
+            self.assertNotIn("Child:", (root / "archive.html").read_text())
+            self.assertNotIn("Riley & Rowan", (root / "archive.html").read_text())
+
+            ArchiveExporter(root).save()
+            self.assertTrue(
+                (root / "archive.md").read_text().startswith("# Riley's Famly Archive")
+            )
+            self.assertNotIn("Child:", (root / "archive.md").read_text())
+            self.assertNotIn("Child:", (root / "archive.html").read_text())
+
+    def test_legacy_archive_title_prefers_child_specific_tagged_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            tagged_path = root / "tagged.jpg"
+            tagged_path.write_bytes(b"photo")
+            tagged_media = exporter.media("tagged-photo", "photo", tagged_path)
+            exporter.add_entry(
+                entry_id="tagged_photo:tagged-photo",
+                source="tagged_photo",
+                kind="photo",
+                date="2024-01-01T10:00:00Z",
+                author=None,
+                children=[{"id": "child-riley", "name": "Riley"}],
+                text=None,
+                media=[tagged_media],
+            )
+            exporter.add_entry(
+                entry_id="journey:shared-observation",
+                source="journey",
+                kind="observation",
+                date="2024-01-02T10:00:00Z",
+                author="Rachel",
+                children=[
+                    {"id": "child-riley", "name": "Riley"},
+                    {"id": "child-rowan", "name": "Rowan"},
+                ],
+                text="A shared observation",
+            )
+            exporter.save()
+
+            self.assertTrue(
+                (root / "archive.md").read_text().startswith("# Riley's Famly Archive")
+            )
+            self.assertNotIn("Child:", (root / "archive.md").read_text())
+            self.assertNotIn("Child:", (root / "archive.html").read_text())
+
+    def test_legacy_archive_title_collapses_aliases_for_the_same_child_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            exporter.add_entry(
+                entry_id="journey:first-name",
+                source="journey",
+                kind="observation",
+                date="2024-01-01T10:00:00Z",
+                author="Rachel",
+                children=[{"id": "child-riley", "name": "Riley"}],
+                text="First name form",
+            )
+            exporter.add_entry(
+                entry_id="journey:first-name-and-initial",
+                source="journey",
+                kind="observation",
+                date="2024-01-02T10:00:00Z",
+                author="Rachel",
+                children=[{"id": "child-riley", "name": "Riley R."}],
+                text="Initial form",
+            )
+            exporter.save()
+
+            markdown = (root / "archive.md").read_text()
+            self.assertTrue(markdown.startswith("# Riley's Famly Archive"))
+            self.assertNotIn("Riley & Riley R.", markdown)
+            self.assertNotIn("Child:", markdown)
+            self.assertNotIn("Child:", (root / "archive.html").read_text())
+
     def test_entries_support_text_media_or_both_and_sort_oldest_first(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -68,7 +173,7 @@ class ArchiveExporterTests(unittest.TestCase):
                 markdown.index("Text only"), markdown.index("Text and photo")
             )
             self.assertIn("Written by: Rachel Rivers", markdown)
-            self.assertIn("Child: Riley", markdown)
+            self.assertNotIn("Child: Riley", markdown)
             self.assertTrue(markdown.startswith("# Riley's Famly Archive\n"))
             self.assertIn("![Photo 1](<2024-01-02/photo one.jpg>)", markdown)
             html = (root / "archive.html").read_text()
@@ -113,6 +218,42 @@ class ArchiveExporterTests(unittest.TestCase):
                 [entry["entry_id"] for entry in payload["entries"]],
                 ["journey:observation"],
             )
+
+    def test_same_tagged_photo_merges_children_in_combined_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo_path = root / "shared.jpg"
+            photo_path.write_bytes(b"photo")
+            exporter = ArchiveExporter(root)
+            photo = exporter.media("shared-photo", "photo", photo_path)
+
+            for child_id, name in (
+                ("child-riley", "Riley"),
+                ("child-rowan", "Rowan"),
+            ):
+                exporter.add_entry(
+                    entry_id="tagged_photo:shared-photo",
+                    source="tagged_photo",
+                    kind="photo",
+                    date="2024-01-01T00:00:00Z",
+                    author=None,
+                    children=[{"id": child_id, "name": name}],
+                    text=None,
+                    media=[photo],
+                )
+            exporter.save()
+
+            payload = json.loads((root / "archive.json").read_text())
+            self.assertEqual(
+                {child["name"] for child in payload["entries"][0]["children"]},
+                {"Riley", "Rowan"},
+            )
+            self.assertTrue(
+                (root / "archive.md")
+                .read_text()
+                .startswith("# Riley & Rowan's Famly Archive\n")
+            )
+            self.assertIn("Child: Riley, Rowan", (root / "archive.md").read_text())
 
     def test_feed_duplicate_does_not_hide_tagged_photo_entry(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -50,6 +50,7 @@ class FamlyDownloader:
     ):
         self._pictures_folder: Path = pictures_folder
         self._pictures_folder.mkdir(parents=True, exist_ok=True)
+        self._protect_output_folder()
 
         self.stop_on_existing = stop_on_existing
         self.latitude = latitude
@@ -67,6 +68,13 @@ class FamlyDownloader:
         )
         if not access_token:
             self._apiClient.login(email, password)
+
+    def _protect_output_folder(self):
+        """Keep generated personal data out of an accidental Git commit."""
+
+        ignore_path = self._pictures_folder / ".gitignore"
+        if not ignore_path.exists():
+            ignore_path.write_text("*\n!.gitignore\n", encoding="utf-8")
 
     @staticmethod
     def _remote_id(item: dict, *keys: str) -> str | None:
@@ -171,6 +179,10 @@ class FamlyDownloader:
     def save_archive(self):
         if self.archive:
             self.archive.save()
+
+    def set_archive_children(self, children: list[tuple[str, str]]):
+        if self.archive:
+            self.archive.set_archive_children(children)
 
     def load_state(self):
         if self.state_file.exists():
@@ -588,12 +600,16 @@ class FamlyDownloader:
             metadata={"originator_id": feed_item.get("originatorId")},
         )
 
-    def archive_parent_posts_for_tagged_photos(self):
+    def archive_parent_posts_for_tagged_photos(
+        self, selected_children: list[tuple[str, str]] | None = None
+    ):
         """Archive matching feed-post text without downloading any feed media."""
 
         if not self.archive:
             raise ValueError("Parent post text requires --export-text")
-        tagged_media = self.archive.media_index("tagged_photo", "photo")
+        tagged_media = self.archive.media_index(
+            "tagged_photo", "photo", selected_children=selected_children
+        )
         if not tagged_media:
             click.secho(
                 "No archived tagged photos were found; no parent posts to match.",

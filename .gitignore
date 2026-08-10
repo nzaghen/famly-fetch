@@ -1,4 +1,11 @@
 pictures/
+pictures-*/
+archive.json
+archive.md
+archive.html
+archive.exclude.json
+archive.render-report.json
+state.json
 .DS_Store
 
 # Byte-compiled / optimized / DLL files

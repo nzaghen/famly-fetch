@@ -13,6 +13,49 @@ def get_version():
         return "unknown"
 
 
+def _select_children(children, selector):
+    """Select one child by exact ID or case-insensitive exact name."""
+
+    unique_children = []
+    seen_ids = set()
+    for child in children:
+        child_id = str(child[0])
+        if child_id in seen_ids:
+            continue
+        seen_ids.add(child_id)
+        unique_children.append(child)
+    children = unique_children
+
+    if not selector:
+        return children
+
+    selector = selector.strip()
+    id_matches = [child for child in children if str(child[0]) == selector]
+    if id_matches:
+        return id_matches
+
+    name_matches = [
+        child for child in children if str(child[1]).casefold() == selector.casefold()
+    ]
+    if len(name_matches) == 1:
+        return name_matches
+    if len(name_matches) > 1:
+        matching_ids = ", ".join(str(child_id) for child_id, _ in name_matches)
+        raise click.UsageError(
+            f'More than one child is named "{selector}". '
+            f"Use their Famly child ID instead: {matching_ids}"
+        )
+
+    available = ", ".join(
+        f"{first_name} ({child_id})" for child_id, first_name in children
+    )
+    if not available:
+        available = "none"
+    raise click.UsageError(
+        f'No child matched "{selector}". Available children: {available}'
+    )
+
+
 @click.command()
 @click.option(
     "--email",
@@ -42,6 +85,13 @@ def get_version():
     help="Your famly.co instance baseurl (default: https://app.famly.co), can be set via FAMLY_BASE_URL env var",
     metavar="URL",
     default="https://app.famly.co",
+    type=str,
+)
+@click.option(
+    "--child",
+    "child_selector",
+    help="Process one child by exact name or Famly child ID",
+    metavar="NAME_OR_ID",
     type=str,
 )
 @click.option("--no-tagged", is_flag=True, help="Don't download tagged images")
@@ -164,6 +214,7 @@ def main(
     password: str,
     access_token: str,
     famly_base_url: str,
+    child_selector: str,
     no_tagged: bool,
     journey: bool,
     notes: bool,
@@ -187,6 +238,11 @@ def main(
 
     if tagged_post_text and not export_text:
         raise click.UsageError("--tagged-post-text requires --export-text")
+    if child_selector and (messages or liked or feed):
+        raise click.UsageError(
+            "--child cannot be combined with --messages, --liked, or --feed "
+            "because those sources cannot be reliably filtered by child"
+        )
 
     if state_file is None:
         state_file = pictures_folder / "state.json"
@@ -231,7 +287,9 @@ def main(
 
         # Process each child
         parent_ids = set()
-        for child_id, first_name in famly_downloader.get_all_children():
+        children = _select_children(famly_downloader.get_all_children(), child_selector)
+        famly_downloader.set_archive_children(children)
+        for child_id, first_name in children:
             parent_ids |= famly_downloader.get_parents_ids(child_id)
             if not no_tagged:
                 famly_downloader.download_tagged_images(child_id, first_name)
@@ -246,11 +304,16 @@ def main(
             famly_downloader.download_images_from_feed(parent_ids)
 
         if tagged_post_text:
-            famly_downloader.archive_parent_posts_for_tagged_photos()
+            selected_children = children if child_selector else None
+            famly_downloader.archive_parent_posts_for_tagged_photos(
+                selected_children=selected_children
+            )
 
         if feed:
             famly_downloader.download_all_images_from_feed()
 
+    except click.ClickException:
+        raise
     except Exception as e:
         click.secho(f"An exception occurred: {e}", fg="red")
     finally:

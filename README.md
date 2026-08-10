@@ -98,8 +98,53 @@ by this repository review.
 Enter your email and password when prompted, or provide an access token for authentication. Run `famly-fetch --help` to
 get full help page.
 
+If the login contains more than one child, use `--child` with an exact child name
+or Famly child ID. Use a separate output folder for each child so their archives
+and download state remain independent:
+
+```bash
+famly-fetch --child Riley --export-text --journey \
+  --pictures-folder pictures-riley
+famly-fetch --child Rowan --export-text --journey \
+  --pictures-folder pictures-rowan
+```
+
+Enrich each archive's weekly photos with matching parent-post text using the
+same child and folder:
+
+```bash
+famly-fetch --child Riley --export-text --tagged-post-text \
+  --pictures-folder pictures-riley
+famly-fetch --child Rowan --export-text --tagged-post-text \
+  --pictures-folder pictures-rowan
+```
+
+Names are matched exactly without regard to uppercase or lowercase. If two
+children have the same name, the command reports their IDs so one can be selected
+unambiguously. The option applies to tagged photos, Journey entries, and notes.
+It cannot be combined with `--messages`, `--liked`, or `--feed`, because those
+account-wide sources cannot be reliably restricted to one child.
+
+Archives created before child selection was stored may have inferred a combined
+title from shared observations. To add the selected child to an existing archive
+without downloading any images again, run:
+
+```bash
+famly-fetch --child Riley --no-tagged --export-text \
+  --pictures-folder pictures-riley
+```
+
+This updates the archive metadata and regenerates its Markdown and HTML in the
+same folder. Subsequent standalone generation keeps the corrected title.
+
 Downloaded images will be stored in the `pictures` directory of the
 the folder where you run this program from.
+
+Every newly created output folder receives a small `.gitignore` that excludes
+its contents, reducing the risk of accidentally committing private photos or
+archive text when the repository is under Git. Existing `.gitignore` files are
+never overwritten. Keeping personal output outside the repository is still the
+safest arrangement.
 
 By default, it will only download images where you have tagged your child. The
 date that the photo was taken is embedded in its metadata and in its title.
@@ -338,6 +383,8 @@ Options:
   --famly-base-url URL            Your famly.co instance baseurl (default:
                                   https://app.famly.co), can be set via
                                   FAMLY_BASE_URL env var
+  --child NAME_OR_ID              Process one child by exact name or Famly child
+                                  ID
   --no-tagged                     Don't download tagged images
   -j, --journey                   Download images from child Learning Journey
   -n, --notes                     Download images from child notes

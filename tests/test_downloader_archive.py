@@ -156,6 +156,18 @@ class _ParentPostApi:
 
 
 class DownloaderArchiveTests(unittest.TestCase):
+    def test_output_folder_gets_a_private_gitignore_without_overwriting_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloader = FamlyDownloader.__new__(FamlyDownloader)
+            downloader._pictures_folder = root
+            downloader._protect_output_folder()
+            self.assertEqual((root / ".gitignore").read_text(), "*\n!.gitignore\n")
+
+            (root / ".gitignore").write_text("custom\n")
+            downloader._protect_output_folder()
+            self.assertEqual((root / ".gitignore").read_text(), "custom\n")
+
     def test_parent_post_text_mode_matches_existing_tagged_photo_without_downloads(
         self,
     ):
@@ -196,6 +208,65 @@ class DownloaderArchiveTests(unittest.TestCase):
             )
             self.assertIn(
                 "We painted winter trees.", (root / "archive.html").read_text()
+            )
+
+    def test_parent_post_text_can_be_scoped_to_one_child(self):
+        class _TwoChildParentApi:
+            def feed(self, **kwargs):
+                return {
+                    "feedItems": [
+                        {
+                            "feedItemId": "riley-post",
+                            "originatorId": "Post:riley",
+                            "createdDate": "2024-01-01T10:00:00Z",
+                            "body": "Riley's week",
+                            "images": [{"imageId": "riley-photo"}],
+                        },
+                        {
+                            "feedItemId": "rowan-post",
+                            "originatorId": "Post:rowan",
+                            "createdDate": "2024-01-01T11:00:00Z",
+                            "body": "Rowan's week",
+                            "images": [{"imageId": "rowan-photo"}],
+                        },
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = ArchiveExporter(root)
+            for child_id, name, photo_id in (
+                ("child-riley", "Riley", "riley-photo"),
+                ("child-rowan", "Rowan", "rowan-photo"),
+            ):
+                photo_path = root / f"{photo_id}.jpg"
+                photo_path.write_bytes(b"photo")
+                media = archive.media(photo_id, "photo", photo_path)
+                archive.add_entry(
+                    entry_id=f"tagged_photo:{photo_id}",
+                    source="tagged_photo",
+                    kind="photo",
+                    date="2024-01-01T09:00:00Z",
+                    author=None,
+                    children=[{"id": child_id, "name": name}],
+                    text=None,
+                    media=[media],
+                )
+
+            downloader = FamlyDownloader.__new__(FamlyDownloader)
+            downloader.archive = archive
+            downloader._apiClient = _TwoChildParentApi()
+            downloader.archive_parent_posts_for_tagged_photos(
+                selected_children=[("child-riley", "Riley")]
+            )
+            downloader.save_archive()
+
+            payload = json.loads((root / "archive.json").read_text())
+            feed_entries = [
+                entry for entry in payload["entries"] if entry["source"] == "feed"
+            ]
+            self.assertEqual(
+                [entry["text"] for entry in feed_entries], ["Riley's week"]
             )
 
     def test_journey_keeps_text_only_entry_and_links_photo_to_its_post(self):
@@ -255,7 +326,7 @@ class DownloaderArchiveTests(unittest.TestCase):
                 markdown.index("An observation with a photo"),
             )
             self.assertIn("Written by: Rachel", markdown)
-            self.assertIn("Child: Riley", markdown)
+            self.assertNotIn("Child: Riley", markdown)
             self.assertIn("![Photo 1]", markdown)
             self.assertIn("### Assessment", markdown)
             self.assertIn("Configuration: Development Matters", markdown)

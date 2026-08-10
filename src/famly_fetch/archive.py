@@ -77,27 +77,127 @@ def _entry_sort_key(entry: dict) -> tuple:
     return (_parse_date(entry.get("date")), entry.get("entry_id", ""))
 
 
-def _archive_title(payload: dict) -> str:
-    """Name the archive after the child appearing most often in its entries."""
+def _child_name(child: dict) -> str | None:
+    name = child.get("name")
+    if isinstance(name, dict):
+        name = name.get("fullName") or name.get("firstName")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None
+
+
+def _child_identity(child: dict, *, normalize_name: bool = False) -> str | None:
+    child_id = child.get("id")
+    if child_id not in (None, ""):
+        return f"id:{child_id}"
+    name = _child_name(child)
+    if not name:
+        return None
+    return f"name:{name.casefold() if normalize_name else name}"
+
+
+def _child_names(entry: dict) -> list[str]:
+    return [
+        name
+        for child in entry.get("children") or []
+        if isinstance(child, dict) and (name := _child_name(child))
+    ]
+
+
+def _author_name(entry: dict) -> str | None:
+    author = entry.get("author") or {}
+    name = author.get("name") if isinstance(author, dict) else None
+    return str(name) if name else None
+
+
+def _group_media(entry: dict) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for item in entry.get("media") or []:
+        grouped.setdefault(item.get("kind") or "file", []).append(item)
+    return grouped
+
+
+def _belongs_to_children(
+    entry: dict, selected_children: list[tuple[str, str]] | None
+) -> bool:
+    if selected_children is None:
+        return True
+    selected_ids = {str(child_id) for child_id, _ in selected_children}
+    selected_names = {str(name).casefold() for _, name in selected_children}
+    return any(
+        (child.get("id") is not None and str(child["id"]) in selected_ids)
+        or (
+            child.get("id") is None
+            and (name := _child_name(child)) is not None
+            and name.casefold() in selected_names
+        )
+        for child in entry.get("children") or []
+        if isinstance(child, dict)
+    )
+
+
+def _archive_child_names(payload: dict) -> list[str]:
+    """Return selected child names, inferring legacy archives when necessary."""
+
+    explicit_children = payload.get("archive_children")
+    tagged_entries = []
+    if isinstance(explicit_children, list) and explicit_children:
+        title_entries = [{"children": explicit_children}]
+    else:
+        entries = payload.get("entries", [])
+        tagged_entries = [
+            entry for entry in entries if entry.get("source") == "tagged_photo"
+        ]
+        title_entries = tagged_entries or entries
 
     counts: dict[str, int] = {}
+    names: dict[str, str] = {}
     first_seen: dict[str, int] = {}
-    for entry in payload.get("entries", []):
-        names_in_entry = set()
+    for entry in title_entries:
+        children_in_entry = []
         for child in entry.get("children") or []:
-            name = child.get("name") if isinstance(child, dict) else None
-            if isinstance(name, dict):
-                name = name.get("fullName") or name.get("firstName")
-            if isinstance(name, str) and name.strip():
-                names_in_entry.add(name.strip())
-        for name in names_in_entry:
-            first_seen.setdefault(name, len(first_seen))
-            counts[name] = counts.get(name, 0) + 1
+            if not isinstance(child, dict):
+                continue
+            name = _child_name(child)
+            identity = _child_identity(child, normalize_name=True)
+            if not name or not identity:
+                continue
+            if identity not in children_in_entry:
+                children_in_entry.append(identity)
+            existing_name = names.get(identity)
+            if existing_name is None or (len(name.split()), len(name)) < (
+                len(existing_name.split()),
+                len(existing_name),
+            ):
+                names[identity] = name
+        for identity in children_in_entry:
+            first_seen.setdefault(identity, len(first_seen))
+            counts[identity] = counts.get(identity, 0) + 1
 
     if not counts:
+        return []
+    identities = sorted(counts, key=first_seen.get)
+    if not explicit_children and not tagged_entries:
+        highest_count = max(counts.values())
+        identities = [
+            identity for identity in identities if counts[identity] == highest_count
+        ]
+    return [names[identity] for identity in identities]
+
+
+def _archive_title(payload: dict) -> str:
+    """Name the archive after its selected children, with legacy inference."""
+
+    display_names = _archive_child_names(payload)
+    if not display_names:
         return "Famly Archive"
-    child_name = max(counts, key=lambda name: (counts[name], -first_seen[name]))
-    return f"{child_name}'s Famly Archive"
+    if len(display_names) == 1:
+        owner = display_names[0]
+    elif len(display_names) == 2:
+        owner = f"{display_names[0]} & {display_names[1]}"
+    else:
+        owner = f"{', '.join(display_names[:-1])} & {display_names[-1]}"
+    return f"{owner}'s Famly Archive"
 
 
 def _is_weekly_photo_entry(entry: dict) -> bool:
@@ -193,6 +293,7 @@ class ArchiveExporter:
         self.markdown_path = self.json_path.with_suffix(".md")
         self.html_path = self.json_path.with_suffix(".html")
         self._entries: dict[str, dict] = {}
+        self._archive_children: list[dict] | None = None
         self._load_existing()
 
     def _load_existing(self):
@@ -204,6 +305,14 @@ class ArchiveExporter:
             return
         if payload.get("schema_version") != SCHEMA_VERSION:
             return
+        archive_children = payload.get("archive_children")
+        if isinstance(archive_children, list) and all(
+            isinstance(child, dict)
+            and isinstance(child.get("name"), str)
+            and child["name"].strip()
+            for child in archive_children
+        ):
+            self._archive_children = archive_children
         for entry in payload.get("entries", []):
             if entry.get("entry_id"):
                 self._entries[entry["entry_id"]] = entry
@@ -217,6 +326,13 @@ class ArchiveExporter:
         material = json.dumps(fallback_parts, ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
         return f"{source}:generated-{digest}"
+
+    def set_archive_children(self, children: list[tuple[str, str]]):
+        """Persist the child selection used to build this archive."""
+
+        self._archive_children = [
+            {"id": str(child_id), "name": str(name)} for child_id, name in children
+        ]
 
     def media(
         self,
@@ -238,13 +354,19 @@ class ArchiveExporter:
             item["filename"] = filename
         return item
 
-    def media_index(self, source: str, kind: str) -> dict[str, dict]:
+    def media_index(
+        self,
+        source: str,
+        kind: str,
+        selected_children: list[tuple[str, str]] | None = None,
+    ) -> dict[str, dict]:
         """Return archived media from one source, keyed by stable media ID."""
 
         return {
             str(item["media_id"]): item
             for entry in self._entries.values()
             if entry.get("source") == source
+            and _belongs_to_children(entry, selected_children)
             for item in entry.get("media", [])
             if item.get("kind") == kind and item.get("media_id")
         }
@@ -291,6 +413,12 @@ class ArchiveExporter:
             for item in new_entry["media"]:
                 by_media_id[(item.get("kind"), item.get("media_id"))] = item
             new_entry["media"] = list(by_media_id.values())
+            children_by_identity = {}
+            for child in (existing.get("children") or []) + new_entry["children"]:
+                identity = _child_identity(child)
+                if identity:
+                    children_by_identity[identity] = child
+            new_entry["children"] = list(children_by_identity.values())
             for field in (
                 "text",
                 "author",
@@ -298,7 +426,6 @@ class ArchiveExporter:
                 "observed_at",
                 "next_step",
                 "assessment",
-                "children",
                 "metadata",
             ):
                 if not new_entry.get(field) and existing.get(field):
@@ -333,6 +460,8 @@ class ArchiveExporter:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "entries": self._output_entries(),
         }
+        if self._archive_children:
+            payload["archive_children"] = self._archive_children
         temporary_path = self.json_path.with_suffix(self.json_path.suffix + ".tmp")
         temporary_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -449,12 +578,7 @@ def _weekly_parent_posts(group: dict) -> list[dict]:
 
 
 def _weekly_children(group: dict) -> list[str]:
-    names = {
-        str(child.get("name"))
-        for entry in group.get("entries", [])
-        for child in entry.get("children", [])
-        if child.get("name")
-    }
+    names = {name for entry in group.get("entries", []) for name in _child_names(entry)}
     return sorted(names)
 
 
@@ -510,6 +634,18 @@ def _has_assessment_content(assessment: dict | None) -> bool:
     )
 
 
+def _assessment_area_values(area_result: dict) -> tuple[str, object, object]:
+    area = area_result.get("area") or {}
+    title = str(area.get("title") or "Assessment area")
+    age_band = (area_result.get("age_band") or {}).get("label")
+    result = (
+        (area_result.get("assessment_option") or {}).get("label")
+        or area_result.get("refinement")
+        or age_band
+    )
+    return title, result, age_band
+
+
 def _assessment_lines(assessment: dict) -> list[str]:
     lines = ["### Assessment", ""]
     setting = assessment.get("setting") or {}
@@ -518,12 +654,7 @@ def _assessment_lines(assessment: dict) -> list[str]:
 
     areas = assessment.get("areas") or []
     for area_result in areas:
-        area = area_result.get("area") or {}
-        title = area.get("title") or "Assessment area"
-        option = (area_result.get("assessment_option") or {}).get("label")
-        age_band = (area_result.get("age_band") or {}).get("label")
-        refinement = area_result.get("refinement")
-        result = option or refinement or age_band
+        title, result, age_band = _assessment_area_values(area_result)
         lines.append(f"- **{title}:** {result}" if result else f"- **{title}**")
         if age_band and age_band != result:
             lines.append(f"  - Age band: {age_band}")
@@ -554,6 +685,15 @@ def _relative_media_path(item: dict, json_path: Path, output_path: Path) -> str 
         os.path.relpath(absolute_media_path, output_path.parent.resolve())
     ).as_posix()
     return relative_media_path.replace(">", "%3E")
+
+
+def _photo_layout_classes(base_class: str, count: int, index: int) -> str:
+    classes = [base_class]
+    if count == 1 or (count >= 3 and index == count - 1 and count % 2 == 0):
+        classes.append("wide")
+    if count >= 3 and index == 0:
+        classes.append("hero")
+    return " ".join(classes)
 
 
 def _photo_grid_lines(
@@ -610,6 +750,7 @@ def _photo_grid_lines(
 
 def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
     lines = [f"# {_archive_title(payload)}", ""]
+    show_child_names = len(_archive_child_names(payload)) != 1
     generated_at = payload.get("generated_at")
     if generated_at:
         lines.extend([f"Generated: {_display_date(generated_at)}", ""])
@@ -620,7 +761,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
             photo_items = _weekly_photo_items(entry)
             lines.extend([f"## {_display_week(entry.get('date'))}", ""])
             children = ", ".join(_weekly_children(entry))
-            if children:
+            if children and show_child_names:
                 lines.append(f"- Child: {children}")
             lines.extend(
                 [
@@ -634,7 +775,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
                 lines.extend(["### This week", ""])
                 for post in parent_posts:
                     lines.extend([text_to_markdown(str(post["text"])), ""])
-                    author = (post.get("author") or {}).get("name")
+                    author = _author_name(post)
                     attribution = f"Feed post from {_display_date(post.get('date'))}"
                     if author:
                         attribution += f", by {author}"
@@ -648,7 +789,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
             lines.extend(["### Photo details", ""])
             for index, (photo_entry, _) in enumerate(photo_items, start=1):
                 detail = f"- Photo {index}: {_display_date(photo_entry.get('date'))}"
-                author = (photo_entry.get("author") or {}).get("name")
+                author = _author_name(photo_entry)
                 if author:
                     detail += f", by {author}"
                 lines.append(detail)
@@ -663,14 +804,10 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
         lines.extend([f"## {_display_day(entry.get('date'))}", ""])
 
         details = []
-        children = ", ".join(
-            child.get("name", "")
-            for child in entry.get("children", [])
-            if child.get("name")
-        )
-        if children:
+        children = ", ".join(_child_names(entry))
+        if children and show_child_names:
             details.append(f"- Child: {children}")
-        author = (entry.get("author") or {}).get("name")
+        author = _author_name(entry)
         if author:
             details.append(f"- Written by: {author}")
         details.append(f"- Posted: {_display_date(entry.get('date'))}")
@@ -695,9 +832,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
                 ["### What's next", "", text_to_markdown(entry["next_step"]), ""]
             )
 
-        grouped_media: dict[str, list[dict]] = {}
-        for item in entry.get("media", []):
-            grouped_media.setdefault(item.get("kind", "file"), []).append(item)
+        grouped_media = _group_media(entry)
 
         for media_kind in ("photo", "video", "file"):
             items = grouped_media.get(media_kind, [])
@@ -751,14 +886,9 @@ def _html_assessment(assessment: dict) -> str:
         )
 
     for area_result in assessment.get("areas") or []:
-        area = area_result.get("area") or {}
-        title = html_escape(str(area.get("title") or "Assessment area"))
-        option = (area_result.get("assessment_option") or {}).get("label")
-        age_band = (area_result.get("age_band") or {}).get("label")
-        refinement = area_result.get("refinement")
-        result = option or refinement or age_band
+        title, result, age_band = _assessment_area_values(area_result)
         parts.append('<div class="assessment-row">')
-        parts.append(f"<h4>{title}</h4>")
+        parts.append(f"<h4>{html_escape(title)}</h4>")
         if result:
             parts.append(f'<p class="result">{html_escape(str(result))}</p>')
         if age_band and age_band != result:
@@ -787,9 +917,7 @@ def _html_assessment(assessment: dict) -> str:
 
 
 def _html_media(entry: dict, json_path: Path, output_path: Path) -> str:
-    grouped: dict[str, list[dict]] = {}
-    for item in entry.get("media", []):
-        grouped.setdefault(item.get("kind", "file"), []).append(item)
+    grouped = _group_media(entry)
 
     parts = []
     photo_paths = []
@@ -801,21 +929,9 @@ def _html_media(entry: dict, json_path: Path, output_path: Path) -> str:
         parts.append('<div class="photos">')
         gallery_id = _gallery_id(str(entry.get("entry_id") or entry.get("date")))
         gallery_caption = _display_date(entry.get("date"))
-        remaining_count = len(photo_paths) - 1 if len(photo_paths) >= 3 else 0
         for index, path in enumerate(photo_paths):
-            classes = ["photo"]
-            if len(photo_paths) == 1:
-                classes.append("wide")
-            if len(photo_paths) >= 3 and index == 0:
-                classes.append("hero")
-            if (
-                len(photo_paths) >= 3
-                and remaining_count % 2 == 1
-                and index == len(photo_paths) - 1
-            ):
-                classes.append("wide")
             escaped_path = html_escape(path, quote=True)
-            class_name = " ".join(classes)
+            class_name = _photo_layout_classes("photo", len(photo_paths), index)
             parts.append(
                 f'<a class="{class_name}" href="{escaped_path}" '
                 f'data-gallery="{gallery_id}" '
@@ -850,7 +966,13 @@ def _html_media(entry: dict, json_path: Path, output_path: Path) -> str:
     return "".join(parts)
 
 
-def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
+def _html_photo_week(
+    group: dict,
+    json_path: Path,
+    output_path: Path,
+    *,
+    show_child_names: bool,
+) -> str:
     photo_items = _weekly_photo_items(group)
     gallery_id = _gallery_id(str(group.get("entry_id")))
     parts = [
@@ -861,7 +983,7 @@ def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
     parts.append('<span class="badge">Weekly photos</span></header>')
     parts.append('<div class="meta">')
     children = ", ".join(_weekly_children(group))
-    if children:
+    if children and show_child_names:
         parts.append(f"<span>Child: {html_escape(children)}</span>")
     parts.append(f"<span>{len(photo_items)} photos</span></div>")
 
@@ -872,7 +994,7 @@ def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
             parts.append('<div class="weekly-post-description">')
             parts.append(_html_text(post["text"]))
             attribution = f"Feed post from {_display_date(post.get('date'))}"
-            author = (post.get("author") or {}).get("name")
+            author = _author_name(post)
             if author:
                 attribution += f", by {author}"
             parts.append(
@@ -882,29 +1004,18 @@ def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
         parts.append("</section>")
 
     parts.append('<div class="photos weekly-photos">')
-    remaining_count = len(photo_items) - 1 if len(photo_items) >= 3 else 0
     for index, (entry, item) in enumerate(photo_items):
         path = _relative_media_path(item, json_path, output_path)
         if not path:
             continue
-        classes = ["weekly-photo"]
-        if len(photo_items) == 1:
-            classes.append("wide")
-        if len(photo_items) >= 3 and index == 0:
-            classes.append("hero")
-        if (
-            len(photo_items) >= 3
-            and remaining_count % 2 == 1
-            and index == len(photo_items) - 1
-        ):
-            classes.append("wide")
         escaped_path = html_escape(path, quote=True)
         date = _display_date(entry.get("date"))
         lightbox_caption = date
         if entry.get("text"):
             caption_text = text_to_markdown(str(entry["text"])).replace("\n", " ")
             lightbox_caption = f"{date} | {caption_text}"
-        parts.append(f'<figure class="{" ".join(classes)}">')
+        classes = _photo_layout_classes("weekly-photo", len(photo_items), index)
+        parts.append(f'<figure class="{classes}">')
         parts.append(
             f'<a class="photo" href="{escaped_path}" '
             f'data-gallery="{gallery_id}" '
@@ -913,7 +1024,7 @@ def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
             "</a>"
         )
         parts.append(f"<figcaption><time>{html_escape(date)}</time>")
-        author = (entry.get("author") or {}).get("name")
+        author = _author_name(entry)
         if author:
             parts.append(
                 f'<span class="photo-author">By {html_escape(str(author))}</span>'
@@ -930,6 +1041,7 @@ def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
 def render_html(payload: dict, json_path: Path, output_path: Path) -> str:
     entries = sorted(payload.get("entries", []), key=_entry_sort_key)
     presented_entries = _presentation_entries(entries)
+    show_child_names = len(_archive_child_names(payload)) != 1
     archive_title = html_escape(_archive_title(payload))
     category_counts = {
         category: sum(_entry_category(entry) == category for entry in presented_entries)
@@ -1034,7 +1146,14 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 
     for entry in presented_entries:
         if entry.get("presentation") == "photo_week":
-            parts.append(_html_photo_week(entry, json_path, output_path))
+            parts.append(
+                _html_photo_week(
+                    entry,
+                    json_path,
+                    output_path,
+                    show_child_names=show_child_names,
+                )
+            )
             continue
 
         kind = _label(entry.get("kind") or entry.get("source") or "Entry")
@@ -1045,15 +1164,11 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
         parts.append(f'<span class="badge">{html_escape(kind)}</span>')
         parts.append("</header>")
         parts.append('<div class="meta">')
-        author = (entry.get("author") or {}).get("name")
+        author = _author_name(entry)
         if author:
-            parts.append(f"<span>Written by {html_escape(str(author))}</span>")
-        children = ", ".join(
-            str(child.get("name"))
-            for child in entry.get("children", [])
-            if child.get("name")
-        )
-        if children:
+            parts.append(f"<span>Written by {html_escape(author)}</span>")
+        children = ", ".join(_child_names(entry))
+        if children and show_child_names:
             parts.append(f"<span>Child: {html_escape(children)}</span>")
         parts.append(f"<span>Posted {_display_date(entry.get('date'))}</span>")
         if entry.get("observed_at"):
