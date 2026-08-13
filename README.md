@@ -13,7 +13,7 @@ to test them before submitting them.**
 
 ## Local Development
 
-To run the project locally from source:
+Python 3.10 or newer is required. To run the project locally from source:
 
 ```bash
 git clone https://github.com/ileodo/famly-fetch.git
@@ -41,13 +41,14 @@ deactivate
 
 ## Running CI Locally
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) lints and format-checks
-the code across a matrix of Python versions (3.10, 3.11, 3.12, 3.13). You can
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the unit tests,
+lints, and format-checks the code across a matrix of Python versions (3.10,
+3.11, 3.12, 3.13). You can
 reproduce that workflow on your own machine before pushing, using the
 `scripts/ci-local.sh` wrapper around [`act`](https://github.com/nektos/act).
 
 It runs the exact same steps as GitHub (checkout, set up Python, install
-dependencies, `ruff check`, `ruff format --diff`) inside Ubuntu containers, one
+dependencies, `ruff check`, `ruff format --check`, and unit tests) inside Ubuntu containers, one
 per matrix entry, so any failure you see locally matches what CI will report.
 
 The workflow runs in a local Docker image built from `ci-local.Dockerfile`,
@@ -147,7 +148,10 @@ never overwritten. Keeping personal output outside the repository is still the
 safest arrangement.
 
 By default, it will only download images where you have tagged your child. The
-date that the photo was taken is embedded in its metadata and in its title.
+timestamp supplied by Famly is embedded in the filename and EXIF metadata. Famly
+has removed the camera's original metadata, so this is not guaranteed to be the
+camera's true capture time. Journey photos use the observation date when Famly
+provides one and otherwise use the publication timestamp.
 For journey, notes and messages, the associated text is also added as an exif
 comment unless disabled with `--no-text-comments`.
 
@@ -158,6 +162,27 @@ data of all downloaded images by providing latitude and longitude values.
 The `--stop-on-existing` option is helpful if you wish to download
 images continously and just want to download what is new since last
 download.
+
+### Strict Famly-only networking
+
+famly-fetch enforces a strict outbound-network policy:
+
+- Email, password, access token, and API request bodies can be sent only to
+  `https://app.famly.co` over HTTPS.
+- Images, videos, and attachments can be downloaded only from `famly.co` or an
+  HTTPS subdomain such as `img.famly.co`.
+- Every redirect and the final response URL are checked against the same policy.
+- Environment-configured HTTP and HTTPS proxies are disabled so credentials and
+  downloads cannot be routed through another service.
+- Remote media URLs and credentials are not stored in `archive.json` or
+  `archive.md`.
+
+If Famly returns an Amazon S3, CloudFront, or any other non-Famly URL, the
+download is deliberately blocked before connecting. The command reports the
+blocked hostname and saves whatever archive data it had safely processed so far.
+
+The production Dockerfile also installs the checked-out local source rather than
+downloading a potentially different `famly-fetch` package from PyPI.
 
 ### Downloading all feed images
 
@@ -262,10 +287,11 @@ The HTML archive is recommended for browsing because Markdown applications do
 not consistently support page-width styling. It uses local system fonts and
 local archive media only. Photos preserve their complete aspect ratio. Clicking
 one opens a full-screen gallery; arrow buttons, keyboard arrow keys, or a swipe
-move within that post or weekly group, and Escape closes it. The dependency-free
-gallery code is embedded in the HTML—there is no library, CDN, web font,
-analytics, or network request. The content security policy blocks remote
-connections.
+move through every photo visible in the active filtered view, and Escape closes
+it. The dependency-free gallery code is embedded in the HTML—there is no
+library, CDN, web font, analytics, or network request. The content security
+policy blocks remote connections. Controls and layouts are sized responsively
+for current iPhones and iPads as well as desktop browsers.
 
 The filter bar can show everything or narrow the archive to weekly photos,
 Journey observations, assessments and progress reviews, or other entries such
@@ -352,7 +378,9 @@ Records use this general shape (fields are empty where they do not apply):
 
 You can customize the filename format using the `--filename-pattern` option.
 The pattern supports custom placeholders and standard strftime date/time formats.
-The file extension is automatically appended.
+The file extension is automatically appended. If `%ID` is omitted, famly-fetch
+adds it automatically so two photos with the same timestamp cannot overwrite one
+another.
 
 **Custom placeholders:**
 
@@ -380,9 +408,8 @@ Options:
                                   FAMLY_PASSWORD env var
   --access-token TOKEN            Your famly.co access token, can be set via
                                   FAMLY_ACCESS_TOKEN env var
-  --famly-base-url URL            Your famly.co instance baseurl (default:
-                                  https://app.famly.co), can be set via
-                                  FAMLY_BASE_URL env var
+  --famly-base-url URL            Famly API base URL. The strict network policy
+                                  accepts only https://app.famly.co
   --child NAME_OR_ID              Process one child by exact name or Famly child
                                   ID
   --no-tagged                     Don't download tagged images
@@ -452,12 +479,15 @@ Build the container:
 
 ```bash
 docker build -t famly-fetch -f dev.Dockerfile .
-docker run -it -v $PWD/pictures:/app/pictures famly-fetch
+docker run --rm -it -v $PWD/pictures:/app/pictures famly-fetch
 ```
 
 Or use docker compose workflow
 
 ```bash
 docker compose build
-docker compose run app
+docker compose run --rm app
 ```
+
+The Compose configuration prompts for credentials interactively instead of
+placing a Famly password in persistent container environment metadata.

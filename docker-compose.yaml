@@ -6,9 +6,9 @@ services:
       context: .
       dockerfile: dev.Dockerfile
     environment:
-      - FAMLY_EMAIL=${FAMLY_EMAIL} # default to get value from host environment
-      - FAMLY_PASSWORD=${FAMLY_PASSWORD} # default to get value from host environment
       - FAMLY_PICTURES_FOLDER=/app/pictures
     volumes:
       - ./pictures:/app/pictures
+    stdin_open: true
+    tty: true
     entrypoint: ["famly-fetch", "-e"]

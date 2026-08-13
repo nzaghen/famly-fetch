@@ -43,7 +43,7 @@ concurrent container builds.
 
 This is a faithful local mirror of "Python CI": it runs the exact same
 steps (checkout, setup-python, install deps, ruff check, ruff format
---diff) inside ubuntu containers, one per matrix entry, so failures seen
+--check, and unit tests) inside ubuntu containers, one per matrix entry, so failures seen
 here match what GitHub reports.
 
 Usage:

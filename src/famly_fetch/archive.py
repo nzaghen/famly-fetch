@@ -19,6 +19,10 @@ class ExclusionFileError(ValueError):
     """Raised when an archive exclusion file cannot be safely applied."""
 
 
+class ArchiveFileError(ValueError):
+    """Raised when an existing archive cannot be safely loaded or merged."""
+
+
 def exclusion_path(json_path: Path) -> Path:
     """Return the automatic exclusion-list path for an archive JSON file."""
 
@@ -301,21 +305,55 @@ class ArchiveExporter:
             return
         try:
             payload = json.loads(self.json_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
+        except (OSError, json.JSONDecodeError) as error:
+            raise ArchiveFileError(
+                f"Could not safely load existing archive: {self.json_path}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ArchiveFileError(
+                f"Existing archive must contain a JSON object: {self.json_path}"
+            )
         if payload.get("schema_version") != SCHEMA_VERSION:
-            return
+            raise ArchiveFileError(
+                f"Unsupported archive schema in {self.json_path}: "
+                f"{payload.get('schema_version')!r}"
+            )
         archive_children = payload.get("archive_children")
-        if isinstance(archive_children, list) and all(
-            isinstance(child, dict)
-            and isinstance(child.get("name"), str)
-            and child["name"].strip()
-            for child in archive_children
-        ):
+        if archive_children is not None:
+            if not isinstance(archive_children, list) or not all(
+                isinstance(child, dict)
+                and isinstance(child.get("name"), str)
+                and child["name"].strip()
+                for child in archive_children
+            ):
+                raise ArchiveFileError(
+                    f"Existing archive has invalid archive_children: {self.json_path}"
+                )
             self._archive_children = archive_children
-        for entry in payload.get("entries", []):
-            if entry.get("entry_id"):
-                self._entries[entry["entry_id"]] = entry
+        entries = payload.get("entries", [])
+        if not isinstance(entries, list):
+            raise ArchiveFileError(
+                f'Existing archive needs an "entries" list: {self.json_path}'
+            )
+        seen_entry_ids = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ArchiveFileError(
+                    f"Existing archive contains a non-object entry: {self.json_path}"
+                )
+            entry_id = entry.get("entry_id")
+            if not isinstance(entry_id, str) or not entry_id.strip():
+                raise ArchiveFileError(
+                    f"Existing archive contains an entry without a valid entry_id: "
+                    f"{self.json_path}"
+                )
+            if entry_id in seen_entry_ids:
+                raise ArchiveFileError(
+                    f"Existing archive contains duplicate entry_id {entry_id!r}: "
+                    f"{self.json_path}"
+                )
+            seen_entry_ids.add(entry_id)
+            self._entries[entry_id] = entry
 
     @staticmethod
     def entry_id(source: str, remote_id: str | None, *fallback_parts) -> str:
@@ -341,10 +379,18 @@ class ArchiveExporter:
         path: Path,
         filename: str | None = None,
     ) -> dict:
+        existing = self.find_media(media_id, kind)
+        if existing:
+            if filename and not existing.get("filename"):
+                existing["filename"] = filename
+            return existing
+
         try:
             local_path = path.resolve().relative_to(self.root).as_posix()
-        except ValueError:
-            local_path = Path(os.path.relpath(path.resolve(), self.root)).as_posix()
+        except ValueError as error:
+            raise ValueError(
+                f"Media path must stay inside the archive folder: {path}"
+            ) from error
         item = {
             "media_id": str(media_id),
             "kind": kind,
@@ -352,7 +398,52 @@ class ArchiveExporter:
         }
         if filename:
             item["filename"] = filename
+        self._replace_media_references(item)
         return item
+
+    def _replace_media_references(self, replacement: dict):
+        """Move stale references for one media ID to its new verified destination."""
+
+        identity = (replacement.get("kind"), replacement.get("media_id"))
+        for entry in self._entries.values():
+            media = entry.get("media", [])
+            for index, item in enumerate(media):
+                if (item.get("kind"), item.get("media_id")) != identity:
+                    continue
+                updated = dict(replacement)
+                if item.get("filename") and not updated.get("filename"):
+                    updated["filename"] = item["filename"]
+                media[index] = updated
+
+    def media_path(self, item: dict) -> Path:
+        """Resolve an archived media item without allowing it outside the root."""
+
+        local_path = item.get("local_path")
+        if not local_path:
+            raise ValueError("Archived media item has no local_path")
+        path = (self.root / str(local_path)).resolve()
+        try:
+            path.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError(
+                f"Archived media path leaves the archive folder: {local_path}"
+            ) from error
+        return path
+
+    def find_media(self, media_id: str, kind: str) -> dict | None:
+        """Return a matching archived item only when its local file still exists."""
+
+        media_id = str(media_id)
+        for entry in self._entries.values():
+            for item in entry.get("media", []):
+                if str(item.get("media_id")) != media_id or item.get("kind") != kind:
+                    continue
+                try:
+                    if self.media_path(item).is_file():
+                        return dict(item)
+                except ValueError:
+                    continue
+        return None
 
     def media_index(
         self,
@@ -776,7 +867,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
                 for post in parent_posts:
                     lines.extend([text_to_markdown(str(post["text"])), ""])
                     author = _author_name(post)
-                    attribution = f"Feed post from {_display_date(post.get('date'))}"
+                    attribution = f"Feed post from {_display_day(post.get('date'))}"
                     if author:
                         attribution += f", by {author}"
                     lines.extend([f"*{attribution}*", ""])
@@ -810,11 +901,7 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
         author = _author_name(entry)
         if author:
             details.append(f"- Written by: {author}")
-        details.append(f"- Posted: {_display_date(entry.get('date'))}")
-        if entry.get("observed_at"):
-            details.append(f"- Observed: {_display_date(entry['observed_at'])}")
-        if entry.get("published_at"):
-            details.append(f"- Published: {_display_date(entry['published_at'])}")
+        details.append(f"- Posted: {_display_day(entry.get('date'))}")
         kind = entry.get("kind")
         if kind:
             details.append(f"- Type: {_label(kind)}")
@@ -993,7 +1080,7 @@ def _html_photo_week(
         for post in parent_posts:
             parts.append('<div class="weekly-post-description">')
             parts.append(_html_text(post["text"]))
-            attribution = f"Feed post from {_display_date(post.get('date'))}"
+            attribution = f"Feed post from {_display_day(post.get('date'))}"
             author = _author_name(post)
             if author:
                 attribution += f", by {author}"
@@ -1069,7 +1156,7 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .archive-header h1{font-family:Georgia,serif;font-size:clamp(2.2rem,6vw,4rem);font-weight:500;line-height:1;margin:0 0 12px}
 .generated{color:#766d64;font-size:.9rem}
 .filters{align-items:center;background:rgba(244,241,236,.94);border:1px solid #ded6cc;border-radius:16px;display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin:0 0 28px;padding:8px;position:sticky;top:10px;z-index:20}
-.filter-button{appearance:none;background:transparent;border:0;border-radius:10px;color:#665d55;cursor:pointer;font:inherit;font-size:.82rem;font-weight:650;padding:8px 12px}
+.filter-button{appearance:none;background:transparent;border:0;border-radius:10px;color:#665d55;cursor:pointer;font:inherit;font-size:.82rem;font-weight:650;min-height:44px;padding:8px 12px}
 .filter-button:hover{background:#e9e2d9}.filter-button[aria-pressed="true"]{background:#554b42;color:#fff}
 .filter-count{font-size:.72rem;margin-left:4px;opacity:.72}.filter-empty{background:#fff;border:1px solid #e5ded5;border-radius:14px;color:#766d64;padding:24px;text-align:center}
 .post{background:#fff;border:1px solid #e5ded5;border-radius:18px;padding:clamp(22px,5vw,44px);margin:0 0 28px;box-shadow:0 10px 30px rgba(65,49,35,.06);overflow:hidden}
@@ -1098,7 +1185,7 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .lightbox-image{display:block;max-height:calc(100dvh - 130px);max-width:100%;object-fit:contain}
 .lightbox-caption{bottom:-38px;color:#e7e0d8;font-size:.85rem;left:0;position:absolute;text-align:center;width:100%}
 .lightbox-counter{color:#d6cec5;font-size:.78rem;left:20px;position:fixed;top:18px}
-.lightbox-button{appearance:none;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);border-radius:999px;color:#fff;cursor:pointer;font:inherit;height:44px;position:fixed;width:44px}
+.lightbox-button{appearance:none;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);border-radius:999px;color:#fff;cursor:pointer;font:inherit;height:44px;position:fixed;width:44px;z-index:2}
 .lightbox-button:hover,.lightbox-button:focus-visible{background:rgba(255,255,255,.2);outline:2px solid #fff;outline-offset:2px}
 .lightbox-close{right:18px;top:14px}.lightbox-previous{left:18px;top:calc(50% - 22px)}.lightbox-next{right:18px;top:calc(50% - 22px)}
 .lightbox-button:disabled{cursor:default;opacity:.25}
@@ -1170,9 +1257,7 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
         children = ", ".join(_child_names(entry))
         if children and show_child_names:
             parts.append(f"<span>Child: {html_escape(children)}</span>")
-        parts.append(f"<span>Posted {_display_date(entry.get('date'))}</span>")
-        if entry.get("observed_at"):
-            parts.append(f"<span>Observed {_display_date(entry['observed_at'])}</span>")
+        parts.append(f"<span>Posted {_display_day(entry.get('date'))}</span>")
         parts.append("</div>")
 
         if entry.get("text"):
@@ -1235,7 +1320,10 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
   }
 
   function openGallery(link) {
-    items = galleryLinks.filter(item => item.dataset.gallery === link.dataset.gallery);
+    items = galleryLinks.filter(item => {
+      const entry = item.closest("[data-entry-category]");
+      return !entry || !entry.hidden;
+    });
     index = Math.max(0, items.indexOf(link));
     lastFocus = document.activeElement;
     render();

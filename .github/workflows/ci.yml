@@ -27,4 +27,7 @@ jobs:
         run: ruff check --output-format=github
       
       - name: Check code formatting with Ruff
-        run: ruff format --diff
+        run: ruff format --check
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v

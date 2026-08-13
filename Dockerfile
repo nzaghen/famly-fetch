@@ -2,7 +2,10 @@ FROM python:3-alpine
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir famly-fetch
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+
+RUN pip install --no-cache-dir .
 
 VOLUME [ "/pictures" ]
 

@@ -87,9 +87,9 @@ class ChildSelectionTests(unittest.TestCase):
             _Downloader.latest.calls,
             [
                 ("archive-children", [("child-rowan", "Rowan")]),
-                ("parents", "child-rowan"),
                 ("tagged", "child-rowan", "Rowan"),
                 ("journey", "child-rowan", "Rowan"),
+                ("state",),
                 ("save",),
             ],
         )
@@ -116,9 +116,9 @@ class ChildSelectionTests(unittest.TestCase):
             _Downloader.latest.calls,
             [
                 ("archive-children", [("child-riley", "Riley")]),
-                ("parents", "child-riley"),
                 ("tagged", "child-riley", "Riley"),
                 ("parent-text", [("child-riley", "Riley")]),
+                ("state",),
                 ("save",),
             ],
         )
@@ -142,9 +142,7 @@ class ChildSelectionTests(unittest.TestCase):
                 )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertNotIn(
-            ("tagged", "child-riley", "Riley"), _Downloader.latest.calls
-        )
+        self.assertNotIn(("tagged", "child-riley", "Riley"), _Downloader.latest.calls)
         self.assertIn(
             ("parent-text", [("child-riley", "Riley")]),
             _Downloader.latest.calls,
@@ -191,6 +189,68 @@ class ChildSelectionTests(unittest.TestCase):
         self.assertIn('No child matched "Remy"', result.output)
         self.assertIn("Riley (child-riley)", result.output)
         self.assertIn("Rowan (child-rowan)", result.output)
+
+    def test_relations_are_not_requested_without_liked_feed(self):
+        with patch("famly_fetch.cli.FamlyDownloader", _Downloader):
+            result = CliRunner().invoke(
+                main,
+                ["--access-token", "test-token", "--child", "Riley"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(any(call[0] == "parents" for call in _Downloader.latest.calls))
+
+    def test_runtime_failure_returns_nonzero_exit_status(self):
+        class _RejectedDownloader:
+            def __init__(self, **kwargs):
+                raise RuntimeError("Rejected synthetic request")
+
+        with patch("famly_fetch.cli.FamlyDownloader", _RejectedDownloader):
+            result = CliRunner().invoke(
+                main,
+                ["--access-token", "test-token"],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Rejected synthetic request", result.output)
+
+    def test_download_failure_still_saves_partial_state_and_archive(self):
+        class _DownloadRejectedDownloader(_Downloader):
+            def download_tagged_images(self, child_id, first_name):
+                self.calls.append(("tagged", child_id, first_name))
+                raise RuntimeError("Rejected synthetic download")
+
+        with patch("famly_fetch.cli.FamlyDownloader", _DownloadRejectedDownloader):
+            result = CliRunner().invoke(
+                main,
+                ["--access-token", "test-token", "--child", "Riley"],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Rejected synthetic download", result.output)
+        self.assertEqual(
+            _Downloader.latest.calls,
+            [
+                ("archive-children", [("child-riley", "Riley")]),
+                ("tagged", "child-riley", "Riley"),
+                ("state",),
+                ("save",),
+            ],
+        )
+
+    def test_archive_save_failure_returns_nonzero_exit_status(self):
+        class _SaveRejectedDownloader(_Downloader):
+            def save_archive(self):
+                raise RuntimeError("Rejected synthetic archive save")
+
+        with patch("famly_fetch.cli.FamlyDownloader", _SaveRejectedDownloader):
+            result = CliRunner().invoke(
+                main,
+                ["--access-token", "test-token", "--child", "Riley"],
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Rejected synthetic archive save", result.output)
 
 
 if __name__ == "__main__":

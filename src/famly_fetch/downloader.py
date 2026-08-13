@@ -10,22 +10,17 @@ Auth has two versions:
 """
 
 import json
-import os
-import shutil
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 import click
-import piexif
-import piexif.helper
 
 from famly_fetch.api_client import ApiClient
 from famly_fetch.archive import ArchiveExporter
 from famly_fetch.file import File
 from famly_fetch.image import BaseImage, Image, SecretImage
+from famly_fetch.media_persistence import MediaPersistence
 from famly_fetch.video import Video
 
 
@@ -50,13 +45,19 @@ class FamlyDownloader:
     ):
         self._pictures_folder: Path = pictures_folder
         self._pictures_folder.mkdir(parents=True, exist_ok=True)
-        self._protect_output_folder()
 
         self.stop_on_existing = stop_on_existing
         self.latitude = latitude
         self.longitude = longitude
         self.text_comments = text_comments
         self.filename_pattern = filename_pattern
+        self._media_store = MediaPersistence(
+            root=self._pictures_folder,
+            filename_pattern=self.filename_pattern,
+            latitude=self.latitude,
+            longitude=self.longitude,
+        )
+        self._protect_output_folder()
         self.state_file = state_file
         self.include_files = include_files
         self.include_videos = include_videos
@@ -70,11 +71,19 @@ class FamlyDownloader:
             self._apiClient.login(email, password)
 
     def _protect_output_folder(self):
-        """Keep generated personal data out of an accidental Git commit."""
+        self._media_persistence().protect_output_folder()
 
-        ignore_path = self._pictures_folder / ".gitignore"
-        if not ignore_path.exists():
-            ignore_path.write_text("*\n!.gitignore\n", encoding="utf-8")
+    def _media_persistence(self) -> MediaPersistence:
+        if hasattr(self, "_media_store"):
+            return self._media_store
+        return MediaPersistence(
+            root=self._pictures_folder,
+            filename_pattern=getattr(
+                self, "filename_pattern", "%FP-%Y-%m-%d_%H-%M-%S-%ID"
+            ),
+            latitude=getattr(self, "latitude", None),
+            longitude=getattr(self, "longitude", None),
+        )
 
     @staticmethod
     def _remote_id(item: dict, *keys: str) -> str | None:
@@ -176,6 +185,27 @@ class FamlyDownloader:
             return None
         return self.archive.media(media_id, kind, path, filename)
 
+    def _archived_destination(self, item: dict | None, fallback: Path) -> Path:
+        """Use the verified path already associated with a reused media item."""
+
+        if self.archive and item:
+            return self.archive.media_path(item)
+        return fallback
+
+    def _already_downloaded(self, media_id: str, path: Path) -> bool:
+        """Trust state only while the corresponding local file still exists."""
+
+        if media_id not in self.downloaded_images:
+            return False
+        if path.is_file():
+            return True
+        click.secho(
+            f"State listed {media_id}, but {path} is missing; downloading it again.",
+            fg="yellow",
+        )
+        self.downloaded_images.pop(media_id, None)
+        return False
+
     def save_archive(self):
         if self.archive:
             self.archive.save()
@@ -186,13 +216,17 @@ class FamlyDownloader:
 
     def load_state(self):
         if self.state_file.exists():
-            with open(self.state_file, "r") as f:
+            with open(self.state_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {}
 
     def save_state(self):
-        with open(self.state_file, "w") as f:
-            json.dump(self.downloaded_images, f)
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(self.downloaded_images) + "\n", encoding="utf-8"
+        )
+        temporary_path.replace(self.state_file)
 
     def mark_as_downloaded(self, img_id: str):
         self.downloaded_images[img_id] = datetime.now(timezone.utc).isoformat()
@@ -253,7 +287,8 @@ class FamlyDownloader:
                     archive_item = self._archive_media(img.img_id, "photo", file_path)
                     if archive_item:
                         archived_media.append(archive_item)
-                    if img.img_id in self.downloaded_images:
+                    file_path = self._archived_destination(archive_item, file_path)
+                    if self._already_downloaded(img.img_id, file_path):
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
@@ -319,8 +354,10 @@ class FamlyDownloader:
             for _i, observation in enumerate(batch["results"]):
                 author = observation["createdBy"]["name"]["fullName"]
                 remark = observation.get("remark") or {}
-                body = remark.get("body") or ""
                 rich_text_body = remark.get("richTextBody")
+                body = remark.get("body") or rich_text_body or ""
+                if not isinstance(body, str):
+                    body = json.dumps(body, ensure_ascii=False)
                 observed_at = remark.get("date")
                 next_step_data = observation.get("nextStep") or {}
                 next_step = (
@@ -330,13 +367,14 @@ class FamlyDownloader:
                 )
                 text = body + " - " + author
                 date = observation["status"]["createdAt"]
+                media_date = observed_at or date
                 archived_media = []
                 should_stop = False
 
                 for img_dict in observation["images"]:
                     img = SecretImage.from_dict(
                         img_dict,
-                        date_override=date,
+                        date_override=media_date,
                         text_override=text if self.text_comments else None,
                     )
                     click.echo(f" - image {img.img_id} from observation at {img.date}")
@@ -345,7 +383,8 @@ class FamlyDownloader:
                     archive_item = self._archive_media(img.img_id, "photo", file_path)
                     if archive_item:
                         archived_media.append(archive_item)
-                    if img.img_id in self.downloaded_images:
+                    file_path = self._archived_destination(archive_item, file_path)
+                    if self._already_downloaded(img.img_id, file_path):
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
@@ -361,7 +400,7 @@ class FamlyDownloader:
                 if self.include_files and not should_stop:
                     should_stop = self._download_files_from_item(
                         observation.get("files") or [],
-                        date=date,
+                        date=media_date,
                         text=text,
                         filename_prefix=f"{first_name}-journey",
                         archive_media=archived_media,
@@ -370,7 +409,7 @@ class FamlyDownloader:
                 if self.include_videos and not should_stop:
                     should_stop = self._download_videos_from_item(
                         observation.get("videos") or [],
-                        date=date,
+                        date=media_date,
                         text=text,
                         filename_prefix=f"{first_name}-journey",
                         archive_media=archived_media,
@@ -455,6 +494,7 @@ class FamlyDownloader:
             file_path = self.download_file_path(img, first_name)
             if self.archive:
                 archive_item = self._archive_media(img.img_id, "photo", file_path)
+                file_path = self._archived_destination(archive_item, file_path)
                 self.archive.add_entry(
                     entry_id=self.archive.entry_id(
                         "tagged_photo", img.img_id, child_id, img.date.isoformat()
@@ -467,12 +507,13 @@ class FamlyDownloader:
                     text=img.text,
                     media=[archive_item] if archive_item else [],
                 )
-            if img.img_id in self.downloaded_images:
+            if self._already_downloaded(img.img_id, file_path):
                 click.secho(
                     f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                     fg="yellow",
                 )
                 if self.stop_on_existing:
+                    self.save_state()
                     return
                 else:
                     continue
@@ -515,8 +556,9 @@ class FamlyDownloader:
                     archive_item = self._archive_media(img.img_id, "photo", file_path)
                     if archive_item:
                         archived_media.append(archive_item)
+                    file_path = self._archived_destination(archive_item, file_path)
 
-                    if img.img_id in self.downloaded_images:
+                    if self._already_downloaded(img.img_id, file_path):
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
@@ -708,8 +750,9 @@ class FamlyDownloader:
                     archive_item = self._archive_media(img.img_id, "photo", file_path)
                     if archive_item:
                         archived_media.append(archive_item)
+                    file_path = self._archived_destination(archive_item, file_path)
 
-                    if img.img_id in self.downloaded_images:
+                    if self._already_downloaded(img.img_id, file_path):
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
@@ -781,8 +824,9 @@ class FamlyDownloader:
                     archive_item = self._archive_media(img.img_id, "photo", file_path)
                     if archive_item:
                         archived_media.append(archive_item)
+                    file_path = self._archived_destination(archive_item, file_path)
 
-                    if img.img_id in self.downloaded_images:
+                    if self._already_downloaded(img.img_id, file_path):
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
@@ -826,6 +870,8 @@ class FamlyDownloader:
                     self.save_state()
                     return
 
+        self.save_state()
+
     def _download_files_from_item(
         self,
         file_dicts: list,
@@ -856,8 +902,9 @@ class FamlyDownloader:
             archive_item = self._archive_media(f.file_id, "file", file_path, f.name)
             if archive_media is not None and archive_item:
                 archive_media.append(archive_item)
+            file_path = self._archived_destination(archive_item, file_path)
 
-            if f.file_id in self.downloaded_images:
+            if self._already_downloaded(f.file_id, file_path):
                 click.secho(
                     f"File {f.file_id} already downloaded, "
                     f"{'stopping download' if self.stop_on_existing else 'skipping'}.",
@@ -914,8 +961,9 @@ class FamlyDownloader:
             archive_item = self._archive_media(v.video_id, "video", file_path)
             if archive_media is not None and archive_item:
                 archive_media.append(archive_item)
+            file_path = self._archived_destination(archive_item, file_path)
 
-            if v.video_id in self.downloaded_images:
+            if self._already_downloaded(v.video_id, file_path):
                 click.secho(
                     f"Video {v.video_id} already downloaded, "
                     f"{'stopping download' if self.stop_on_existing else 'skipping'}.",
@@ -937,149 +985,19 @@ class FamlyDownloader:
         filename_prefix: str,
         original_name: str | None,
     ) -> Path:
-        """Pick a destination path for a non-image attachment (file or video).
-
-        Uses the original filename if available (sanitised, with date prefix
-        for sortability and id suffix to disambiguate); otherwise falls back
-        to the same filename pattern images use, with the extension derived
-        from the URL path."""
-        date_dir = date.strftime("%Y-%m-%d")
-        dir_path = Path(self._pictures_folder, date_dir)
-        dir_path.mkdir(parents=True, exist_ok=True)
-
-        if original_name:
-            safe = (
-                "".join(
-                    c if c.isalnum() or c in "-_." else "_" for c in original_name
-                ).strip("._")
-                or attachment_id
-            )
-            stem, ext = os.path.splitext(safe)
-            filename = (
-                f"{filename_prefix}-{date.strftime('%Y-%m-%d_%H-%M-%S')}"
-                f"-{attachment_id}-{stem}{ext}"
-            )
-        else:
-            ext = os.path.splitext(urlparse(attachment_url).path)[1].lower()
-            filename = self.filename_pattern
-            filename = filename.replace("%FP", filename_prefix)
-            filename = filename.replace("%ID", attachment_id)
-            filename = date.strftime(filename) + ext
-        return Path(dir_path, filename)
+        return self._media_persistence().attachment_path(
+            attachment_id=attachment_id,
+            attachment_url=attachment_url,
+            date=date,
+            filename_prefix=filename_prefix,
+            original_name=original_name,
+        )
 
     def fetch_binary(self, url: str, file_path: Path):
-        """Stream a URL to disk. Used for non-image attachments where EXIF
-        injection doesn't apply."""
-        req = urllib.request.Request(url=url)
-        with urllib.request.urlopen(req) as r, open(file_path, "wb") as f:
-            if r.status != 200:
-                raise Exception(f"Broken! {r.read().decode('utf-8')}")
-            shutil.copyfileobj(r, f)
+        self._media_persistence().fetch_binary(url, file_path)
 
     def download_file_path(self, img: BaseImage, filename_prefix: str) -> Path:
-        """Generate the file path for the downloaded image."""
-
-        file_ext = os.path.splitext(urlparse(img.url).path)[1].lower()
-
-        # Replace custom patterns first (to avoid collisions with strftime patterns)
-        filename = self.filename_pattern
-        filename = filename.replace("%FP", filename_prefix)
-        filename = filename.replace("%ID", img.img_id)
-
-        filename = img.date.strftime(filename)
-        filename = filename + file_ext
-
-        date_dir = img.date.strftime("%Y-%m-%d")
-        dir_path = Path(self._pictures_folder, date_dir)
-        dir_path.mkdir(parents=True, exist_ok=True)
-        return Path(dir_path, filename)
+        return self._media_persistence().image_path(img, filename_prefix)
 
     def fetch_image(self, img: BaseImage, file_path: Path):
-        req = urllib.request.Request(url=img.url)
-
-        captured_date_for_exif = img.date.strftime("%Y:%m:%d %H:%M:%S")
-
-        if img.date.tzinfo is not None:
-            timezone_offset = img.date.strftime("%z")
-            # Convert from +0200 to +02:00 format
-            if len(timezone_offset) == 5:
-                timezone_offset = timezone_offset[:3] + ":" + timezone_offset[3:]
-        else:
-            timezone_offset = None
-
-        with urllib.request.urlopen(req) as r, open(file_path, "wb") as f:
-            if r.status != 200:
-                raise Exception(f"Broken! {r.read().decode('utf-8')}")
-            shutil.copyfileobj(r, f)
-
-        try:
-            piexif.load(str(file_path.resolve()))
-        except piexif.InvalidImageDataError:
-            click.secho(
-                "Not a JPEG/TIFF or corrupted image, skip exif updating.", fg="yellow"
-            )
-            return
-
-        # Prepare the EXIF data
-        exif_dict = {
-            "Exif": {piexif.ExifIFD.DateTimeOriginal: captured_date_for_exif.encode()}
-        }
-
-        if timezone_offset:
-            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = (
-                timezone_offset.encode()
-            )
-
-        if img.text:
-            exif_dict["Exif"][piexif.ExifIFD.UserComment] = (
-                piexif.helper.UserComment.dump(img.text, encoding="unicode")
-            )
-
-        # Add GPS data if latitude and longitude are provided
-        if self.latitude is not None and self.longitude is not None:
-            from fractions import Fraction
-
-            def to_deg(value, loc):
-                if value < 0:
-                    loc_value = loc[0]
-                elif value > 0:
-                    loc_value = loc[1]
-                else:
-                    loc_value = ""
-                abs_value = abs(value)
-                deg = int(abs_value)
-                t1 = (abs_value - deg) * 60
-                min_val = int(t1)
-                sec = round((t1 - min_val) * 60, 2)
-                return deg, min_val, sec, loc_value
-
-            def to_rational(number):
-                f = Fraction(number).limit_denominator(10000)
-                return (f.numerator, f.denominator)
-
-            lat_deg = to_deg(self.latitude, ["S", "N"])
-            lng_deg = to_deg(self.longitude, ["W", "E"])
-
-            exiv_lat = (
-                to_rational(lat_deg[0]),
-                to_rational(lat_deg[1]),
-                to_rational(lat_deg[2]),
-            )
-            exiv_lng = (
-                to_rational(lng_deg[0]),
-                to_rational(lng_deg[1]),
-                to_rational(lng_deg[2]),
-            )
-
-            exif_dict["GPS"] = {  # type: ignore[assignment]
-                piexif.GPSIFD.GPSVersionID: (2, 0, 0, 0),
-                piexif.GPSIFD.GPSLatitudeRef: lat_deg[3].encode(),
-                piexif.GPSIFD.GPSLatitude: exiv_lat,
-                piexif.GPSIFD.GPSLongitudeRef: lng_deg[3].encode(),
-                piexif.GPSIFD.GPSLongitude: exiv_lng,
-            }
-
-        exif_bytes = piexif.dump(exif_dict)
-
-        # Write the EXIF data to the image
-        piexif.insert(exif_bytes, str(file_path.resolve()))
+        self._media_persistence().fetch_image(img, file_path)

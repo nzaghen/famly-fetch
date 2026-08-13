@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from famly_fetch.dates import parse_famly_datetime
+
 
 @dataclass
 class BaseImage:
@@ -29,7 +31,7 @@ class Image(BaseImage):
             width=data["width"],
             height=data["height"],
             key=data["key"],
-            date=datetime.fromisoformat(date_override or data["createdAt"]),
+            date=parse_famly_datetime(date_override or data["createdAt"]),
             text=text_override or data.get("text", None),
         )
 
@@ -53,7 +55,7 @@ class SecretImage(BaseImage):
             width=data["width"],
             height=data["height"],
             key=data["secret"]["key"],
-            date=datetime.fromisoformat(date_override or data["createdAt"]),
+            date=parse_famly_datetime(date_override or data["createdAt"]),
             path=data["secret"]["path"],
             expires=data["secret"]["expires"],
             text=text_override or data.get("text", None),

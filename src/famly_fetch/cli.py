@@ -82,7 +82,7 @@ def _select_children(children, selector):
 @click.option(
     "--famly-base-url",
     envvar="FAMLY_BASE_URL",
-    help="Your famly.co instance baseurl (default: https://app.famly.co), can be set via FAMLY_BASE_URL env var",
+    help="Famly API base URL. The strict network policy accepts only https://app.famly.co",
     metavar="URL",
     default="https://app.famly.co",
     type=str,
@@ -130,7 +130,7 @@ def _select_children(children, selector):
 @click.option(
     "--export-text",
     is_flag=True,
-    help="Write structured archive.json and chronological archive.md files alongside downloads",
+    help="Write a structured archive.json and chronological archive.md alongside downloads",
 )
 @click.option(
     "-p",
@@ -263,6 +263,7 @@ def main(
         )
 
     famly_downloader = None
+    caught_error = None
     try:
         famly_downloader = FamlyDownloader(
             email=email,
@@ -290,7 +291,8 @@ def main(
         children = _select_children(famly_downloader.get_all_children(), child_selector)
         famly_downloader.set_archive_children(children)
         for child_id, first_name in children:
-            parent_ids |= famly_downloader.get_parents_ids(child_id)
+            if liked:
+                parent_ids |= famly_downloader.get_parents_ids(child_id)
             if not no_tagged:
                 famly_downloader.download_tagged_images(child_id, first_name)
             if journey:
@@ -312,16 +314,37 @@ def main(
         if feed:
             famly_downloader.download_all_images_from_feed()
 
-    except click.ClickException:
-        raise
+    except click.ClickException as error:
+        caught_error = error
     except Exception as e:
-        click.secho(f"An exception occurred: {e}", fg="red")
+        caught_error = click.ClickException(f"An exception occurred: {e}")
     finally:
         if famly_downloader:
             try:
+                famly_downloader.save_state()
+            except Exception as e:
+                state_error = click.ClickException(f"Could not save state: {e}")
+                if caught_error is None:
+                    caught_error = state_error
+                else:
+                    caught_error = click.ClickException(
+                        f"{caught_error.format_message()}; "
+                        f"additionally, {state_error.format_message()}"
+                    )
+            try:
                 famly_downloader.save_archive()
             except Exception as e:
-                click.secho(f"Could not save archive: {e}", fg="red")
+                save_error = click.ClickException(f"Could not save archive: {e}")
+                if caught_error is None:
+                    caught_error = save_error
+                else:
+                    caught_error = click.ClickException(
+                        f"{caught_error.format_message()}; "
+                        f"additionally, {save_error.format_message()}"
+                    )
+
+    if caught_error is not None:
+        raise caught_error
 
 
 if __name__ == "__main__":

@@ -6,6 +6,12 @@ import uuid
 
 from importlib_resources import files
 
+from famly_fetch.network import open_famly_api, validate_api_base_url
+
+
+class GraphQLResponseError(RuntimeError):
+    """Raised when Famly returns GraphQL errors in an HTTP 200 response."""
+
 
 def get_device_id() -> str:
     """
@@ -41,7 +47,7 @@ class ApiClient:
         self._user_agent: str | None = user_agent
         self._device_id = get_device_id()
         self._access_token = access_token
-        self._base = base_url
+        self._base = validate_api_base_url(base_url)
 
     def login(self, email, password):
         """
@@ -112,7 +118,20 @@ class ApiClient:
             f"/graphql?{method}",
             body=postBody,
         )
-
+        errors = data.get("errors") if isinstance(data, dict) else None
+        if errors:
+            messages = []
+            for error in errors:
+                if isinstance(error, dict) and error.get("message"):
+                    messages.append(str(error["message"]))
+                else:
+                    messages.append("Unknown GraphQL error")
+            summary = "; ".join(messages[:3])
+            if len(messages) > 3:
+                summary += f"; and {len(messages) - 3} more"
+            raise GraphQLResponseError(f"{method} failed: {summary}")
+        if not isinstance(data, dict) or "data" not in data or data["data"] is None:
+            raise GraphQLResponseError(f"{method} returned no GraphQL data")
         return data["data"]
 
     def make_api_request(self, method, path, body=None, params=None):
@@ -153,19 +172,15 @@ class ApiClient:
 
         req = urllib.request.Request(url=url, headers=headers, method=method, data=b)
         try:
-            with urllib.request.urlopen(req) as f:
+            with open_famly_api(req) as f:
                 body = f.read().decode("utf-8")
                 if f.status != 200:
                     raise Exception(f"Broken! {body}")
 
-                try:
-                    return json.loads(body)
-                except Exception as _e:
-                    return body
-        except urllib.error.HTTPError as e:
-            # The server couldn't fulfill the request
-            print("Error code: ", e.code)
-            print("Response body: ", e.read())
+                return json.loads(body)
+        except urllib.error.HTTPError:
+            # Preserve the failure so the CLI returns a non-zero exit status.
+            raise
 
     def feed(
         self,

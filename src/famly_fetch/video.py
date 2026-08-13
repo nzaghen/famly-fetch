@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from famly_fetch.dates import parse_famly_datetime
+
 
 @dataclass
 class Video:
@@ -19,6 +21,6 @@ class Video:
         return Video(
             video_id=data["videoId"],
             url=url,
-            date=datetime.fromisoformat(date_override),
+            date=parse_famly_datetime(date_override),
             text=text_override,
         )
