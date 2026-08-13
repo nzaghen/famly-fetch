@@ -1,0 +1,6 @@
+{
+  "excluded_entry_ids": [
+    "journey:replace-with-the-entry-id",
+    "tagged_photo:replace-with-the-photo-id"
+  ]
+}

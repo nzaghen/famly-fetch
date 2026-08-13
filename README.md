@@ -240,6 +240,47 @@ famly-fetch-markdown pictures/archive.json --output family-archive.md
 The first command writes `archive.md` and `archive.html`. A custom Markdown
 output name produces the corresponding HTML name beside it.
 
+The command prints a summary distinguishing tagged photos, weekly cards,
+matching parent posts, empty post bodies, and unmatched photos. For a detailed
+per-week audit with entry and media IDs, add `--render-report`:
+
+```bash
+famly-fetch-markdown pictures/archive.json --render-report
+```
+
+This also writes `pictures/archive.render-report.json`. A weekly card can
+contain several parent posts and many photos.
+
+#### Hiding entries from Markdown and HTML
+
+To hide an entry from the readable archive, create `archive.exclude.json`
+beside `archive.json`. Copy the structure from
+[`archive.exclude.example.json`](archive.exclude.example.json):
+
+```json
+{
+  "excluded_entry_ids": [
+    "journey:replace-with-the-entry-id",
+    "tagged_photo:replace-with-the-photo-id"
+  ]
+}
+```
+
+Use the exact `entry_id` from `archive.json` and remove the placeholder values.
+The listed entries are omitted from generated Markdown and HTML only: the JSON,
+download state, and local media are not changed. Removing an ID restores that
+entry on the next generation without fetching it again.
+
+No extra option is needed. Keep `archive.exclude.json` beside `archive.json`
+and run:
+
+```bash
+famly-fetch-markdown pictures/archive.json
+```
+
+Invalid exclusion JSON stops readable-file generation with an error instead of
+silently showing entries that were meant to be hidden.
+
 Records use this general shape (fields are empty where they do not apply):
 
 ```json

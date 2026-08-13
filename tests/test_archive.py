@@ -4,7 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from famly_fetch.archive import ArchiveExporter, text_to_markdown, write_markdown
+from famly_fetch.archive import (
+    ArchiveExporter,
+    ExclusionFileError,
+    build_render_report,
+    text_to_markdown,
+    write_html,
+    write_markdown,
+    write_render_report,
+)
 
 
 class ArchiveExporterTests(unittest.TestCase):
@@ -167,6 +175,53 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertTrue(markdown.startswith("# Famly Archive\n"))
             self.assertIn("Hello **world**", markdown)
             self.assertEqual(text_to_markdown("<p>One</p><p>Two</p>"), "One\n\nTwo")
+
+    def test_exclusion_file_only_applies_to_readable_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            excluded_entry_id = "journey:private-entry"
+            (root / "archive.exclude.json").write_text(
+                json.dumps({"excluded_entry_ids": [excluded_entry_id]})
+            )
+
+            exporter = ArchiveExporter(root)
+            for entry_id, text in (
+                (excluded_entry_id, "Excluded text"),
+                ("journey:kept-entry", "Kept text"),
+            ):
+                exporter.add_entry(
+                    entry_id=entry_id,
+                    source="journey",
+                    kind="observation",
+                    date="2024-01-01T10:00:00Z",
+                    author="Rachel",
+                    text=text,
+                )
+            exporter.save()
+
+            payload = json.loads((root / "archive.json").read_text())
+            self.assertEqual(
+                {entry["entry_id"] for entry in payload["entries"]},
+                {excluded_entry_id, "journey:kept-entry"},
+            )
+            self.assertNotIn("Excluded text", (root / "archive.md").read_text())
+            self.assertNotIn("Excluded text", (root / "archive.html").read_text())
+
+            write_markdown(root / "archive.json")
+            write_html(root / "archive.json")
+            self.assertNotIn("Excluded text", (root / "archive.md").read_text())
+            self.assertNotIn("Excluded text", (root / "archive.html").read_text())
+
+    def test_invalid_exclusion_file_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "archive.json").write_text(
+                json.dumps({"schema_version": 1, "entries": []})
+            )
+            (root / "archive.exclude.json").write_text("not valid JSON")
+
+            with self.assertRaises(ExclusionFileError):
+                write_markdown(root / "archive.json")
 
     def test_empty_assessment_block_is_not_rendered(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -333,6 +388,62 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertEqual(html.count('data-entry-category="observation"'), 1)
             self.assertEqual(html.count('data-entry-category="other"'), 0)
             self.assertIn("function applyFilter(filter)", html)
+
+    def test_weekly_description_comes_from_matching_parent_feed_post(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            path = root / "photos" / "shared.jpg"
+            path.parent.mkdir()
+            path.write_bytes(b"photo")
+            shared_photo = exporter.media("shared-photo", "photo", path)
+
+            exporter.add_entry(
+                entry_id="tagged_photo:shared-photo",
+                source="tagged_photo",
+                kind="photo",
+                date="2024-01-02T10:00:00Z",
+                author=None,
+                children=[{"id": "child-1", "name": "Riley"}],
+                text="Image-level text",
+                media=[shared_photo],
+            )
+            exporter.add_entry(
+                entry_id="feed:parent-post",
+                source="feed",
+                kind="post",
+                date="2024-01-02T09:00:00Z",
+                author="Rainbow Nursery",
+                text="We painted winter trees this week.",
+                media=[shared_photo],
+            )
+            exporter.save()
+
+            markdown = (root / "archive.md").read_text()
+            self.assertIn("### This week", markdown)
+            self.assertIn("We painted winter trees this week.", markdown)
+            self.assertLess(
+                markdown.index("### This week"), markdown.index("### Photos")
+            )
+
+            html = (root / "archive.html").read_text()
+            self.assertIn('<section class="weekly-summary"><h3>This week</h3>', html)
+            self.assertIn("We painted winter trees this week.", html)
+            self.assertIn(
+                "Feed post from 02 January 2024, 09:00, by Rainbow Nursery", html
+            )
+            self.assertNotIn('data-filter="other"', html)
+            self.assertEqual(html.count("We painted winter trees this week."), 1)
+            self.assertNotIn('data-entry-category="other"', html)
+
+            report = build_render_report(root / "archive.json")
+            self.assertEqual(report["weekly_photos"]["tagged_photo_count"], 1)
+            self.assertEqual(report["weekly_photos"]["weekly_card_count"], 1)
+            self.assertEqual(report["parent_feed_posts"]["matching_post_count"], 1)
+            self.assertEqual(report["photo_matching"]["unmatched_photo_count"], 0)
+            report_path = write_render_report(root / "archive.json")
+            self.assertTrue(report_path.exists())
+            self.assertIn("parent_feed_posts", report_path.read_text())
 
 
 if __name__ == "__main__":

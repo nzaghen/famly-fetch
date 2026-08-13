@@ -15,6 +15,52 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 
 
+class ExclusionFileError(ValueError):
+    """Raised when an archive exclusion file cannot be safely applied."""
+
+
+def exclusion_path(json_path: Path) -> Path:
+    """Return the automatic exclusion-list path for an archive JSON file."""
+
+    return json_path.resolve().with_suffix(".exclude.json")
+
+
+def load_excluded_entry_ids(json_path: Path) -> set[str]:
+    """Load stable entry IDs excluded from this archive's generated outputs."""
+
+    path = exclusion_path(json_path)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ExclusionFileError(f"Could not read exclusion file: {path}") from error
+
+    if not isinstance(payload, dict):
+        raise ExclusionFileError(f"Exclusion file must contain a JSON object: {path}")
+    entry_ids = payload.get("excluded_entry_ids")
+    if not isinstance(entry_ids, list) or not all(
+        isinstance(entry_id, str) and entry_id.strip() for entry_id in entry_ids
+    ):
+        raise ExclusionFileError(
+            f'Exclusion file needs an "excluded_entry_ids" list of strings: {path}'
+        )
+    return {entry_id.strip() for entry_id in entry_ids}
+
+
+def _payload_without_excluded_entries(payload: dict, json_path: Path) -> dict:
+    excluded_entry_ids = load_excluded_entry_ids(json_path)
+    if not excluded_entry_ids:
+        return payload
+    filtered = dict(payload)
+    filtered["entries"] = [
+        entry
+        for entry in payload.get("entries", [])
+        if entry.get("entry_id") not in excluded_entry_ids
+    ]
+    return filtered
+
+
 def _parse_date(value: str | None) -> datetime:
     if not value:
         return datetime.max.replace(tzinfo=timezone.utc)
@@ -679,17 +725,6 @@ def render_markdown(payload: dict, json_path: Path, output_path: Path) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_markdown(json_path: Path, output_path: Path | None = None) -> Path:
-    json_path = json_path.resolve()
-    output_path = (output_path or json_path.with_suffix(".md")).resolve()
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        render_markdown(payload, json_path, output_path), encoding="utf-8"
-    )
-    return output_path
-
-
 def _html_text(value) -> str:
     if value in (None, ""):
         return ""
@@ -1157,12 +1192,148 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
     return "\n".join(parts) + "\n"
 
 
+def write_markdown(json_path: Path, output_path: Path | None = None) -> Path:
+    json_path = json_path.resolve()
+    output_path = (output_path or json_path.with_suffix(".md")).resolve()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    payload = _payload_without_excluded_entries(payload, json_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        render_markdown(payload, json_path, output_path), encoding="utf-8"
+    )
+    return output_path
+
+
 def write_html(json_path: Path, output_path: Path | None = None) -> Path:
     json_path = json_path.resolve()
     output_path = (output_path or json_path.with_suffix(".html")).resolve()
     payload = json.loads(json_path.read_text(encoding="utf-8"))
+    payload = _payload_without_excluded_entries(payload, json_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         render_html(payload, json_path, output_path), encoding="utf-8"
+    )
+    return output_path
+
+
+def build_render_report(json_path: Path) -> dict:
+    """Describe exactly how source entries become weekly rendered content."""
+
+    json_path = json_path.resolve()
+    raw_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    excluded_ids = load_excluded_entry_ids(json_path)
+    raw_entries = raw_payload.get("entries", [])
+    payload = _payload_without_excluded_entries(raw_payload, json_path)
+    entries = sorted(payload.get("entries", []), key=_entry_sort_key)
+
+    tagged_photo_ids = {
+        str(item["media_id"])
+        for entry in entries
+        if _is_weekly_photo_entry(entry)
+        for item in entry.get("media", [])
+        if item.get("kind") == "photo" and item.get("media_id")
+    }
+    matching_parent_posts = []
+    parent_posts_without_text = []
+    matched_photo_ids = set()
+    described_photo_ids = set()
+    for entry in entries:
+        if entry.get("source") != "feed":
+            continue
+        matching_ids = sorted(
+            {
+                str(item["media_id"])
+                for item in entry.get("media", [])
+                if item.get("kind") == "photo"
+                and item.get("media_id")
+                and str(item["media_id"]) in tagged_photo_ids
+            }
+        )
+        if not matching_ids:
+            continue
+        matched_photo_ids.update(matching_ids)
+        record = {
+            "entry_id": entry.get("entry_id"),
+            "date": entry.get("date"),
+            "matched_photo_ids": matching_ids,
+        }
+        if str(entry.get("text") or "").strip():
+            described_photo_ids.update(matching_ids)
+            matching_parent_posts.append(record)
+        else:
+            parent_posts_without_text.append(record)
+
+    weekly_groups = [
+        entry
+        for entry in _presentation_entries(entries)
+        if entry.get("presentation") == "photo_week"
+    ]
+    week_details = []
+    for group in weekly_groups:
+        photo_ids = sorted(
+            {
+                str(item["media_id"])
+                for _, item in _weekly_photo_items(group)
+                if item.get("media_id")
+            }
+        )
+        parent_posts = _weekly_parent_posts(group)
+        week_details.append(
+            {
+                "week": _display_week(group.get("date")),
+                "photo_count": len(photo_ids),
+                "photo_ids": photo_ids,
+                "parent_post_count": len(parent_posts),
+                "parent_post_ids": [post.get("entry_id") for post in parent_posts],
+            }
+        )
+
+    present_entry_ids = {
+        entry.get("entry_id") for entry in raw_entries if entry.get("entry_id")
+    }
+    return {
+        "archive_json": str(json_path),
+        "source_entry_count": len(raw_entries),
+        "rendered_source_entry_count": len(entries),
+        "excluded_entry_ids_present": sorted(excluded_ids & present_entry_ids),
+        "weekly_photos": {
+            "tagged_photo_count": len(tagged_photo_ids),
+            "weekly_card_count": len(weekly_groups),
+            "weekly_cards_with_descriptions": sum(
+                bool(detail["parent_post_count"]) for detail in week_details
+            ),
+            "weekly_cards_without_descriptions": sum(
+                not detail["parent_post_count"] for detail in week_details
+            ),
+        },
+        "parent_feed_posts": {
+            "matching_post_count": len(matching_parent_posts)
+            + len(parent_posts_without_text),
+            "matching_posts_with_text": len(matching_parent_posts),
+            "matching_posts_without_text": len(parent_posts_without_text),
+            "posts_without_text": parent_posts_without_text,
+        },
+        "photo_matching": {
+            "matched_photo_count": len(matched_photo_ids),
+            "photos_with_parent_text": len(described_photo_ids),
+            "unmatched_photo_count": len(tagged_photo_ids - matched_photo_ids),
+            "unmatched_photo_ids": sorted(tagged_photo_ids - matched_photo_ids),
+            "photos_whose_parent_has_no_text": sorted(
+                matched_photo_ids - described_photo_ids
+            ),
+        },
+        "weeks": week_details,
+    }
+
+
+def write_render_report(json_path: Path, output_path: Path | None = None) -> Path:
+    json_path = json_path.resolve()
+    output_path = (
+        output_path or json_path.with_suffix(".render-report.json")
+    ).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(build_render_report(json_path), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     return output_path
