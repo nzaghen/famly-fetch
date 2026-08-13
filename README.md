@@ -153,13 +153,15 @@ Both flags can be combined with any other flags. They reuse the same `state.json
 
 ### Exporting text and a readable local archive
 
-Use `--export-text` with messages, notes, or Journey downloads to write two
+Use `--export-text` with messages, notes, or Journey downloads to write three
 files inside the pictures folder:
 
 - `archive.json` contains structured entries with dates, authors, child details,
   text, assessment results, and paths to associated local media.
 - `archive.md` presents those entries from oldest to newest, with photos beneath
   the post they belong to.
+- `archive.html` provides a centered, card-style reading view with responsive
+  photo grids and explicit UTF-8 encoding.
 
 ```bash
 famly-fetch --export-text --journey --notes --messages \
@@ -201,7 +203,7 @@ famly-fetch --no-tagged --export-text --tagged-post-text \
 ```
 
 Standalone tagged photos are grouped into one grid per calendar week in
-Markdown. Their exact dates and captions remain visible, while Journey
+Markdown and HTML. Their exact dates and captions remain visible, while Journey
 observations and text posts remain separate sections. When a feed post contains
 one of those tagged photo IDs, its body appears once as the week's description.
 This presentation does not alter the individual entries in `archive.json`.
@@ -211,12 +213,21 @@ clickable, dependency-free table layout so the complete portrait or landscape
 image remains visible. Structured assessment details and "what's next" text are
 shown below the observation narrative.
 
-Regenerate Markdown directly from the saved JSON without contacting Famly:
+The HTML archive is recommended for browsing because Markdown applications do
+not consistently support page-width styling. It uses local system fonts and
+local archive media only. Photos preserve their complete aspect ratio, and
+clicking one opens its full-resolution local file.
+
+Regenerate Markdown and HTML directly from the saved JSON without contacting
+Famly:
 
 ```bash
 famly-fetch-markdown pictures/archive.json
 famly-fetch-markdown pictures/archive.json --output family-archive.md
 ```
+
+The first command writes `archive.md` and `archive.html`. A custom Markdown
+output name produces the corresponding HTML name beside it.
 
 Records use this general shape (fields are empty where they do not apply):
 

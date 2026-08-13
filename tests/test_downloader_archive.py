@@ -194,6 +194,9 @@ class DownloaderArchiveTests(unittest.TestCase):
             self.assertNotIn(
                 "Another child's post", (root / "archive.json").read_text()
             )
+            self.assertIn(
+                "We painted winter trees.", (root / "archive.html").read_text()
+            )
 
     def test_journey_keeps_text_only_entry_and_links_photo_to_its_post(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -262,6 +265,13 @@ class DownloaderArchiveTests(unittest.TestCase):
             self.assertIn("Key person summary", markdown)
             self.assertIn("### What's next", markdown)
             self.assertNotIn("— Journey", markdown)
+
+            html = (root / "archive.html").read_text()
+            self.assertIn('<meta charset="utf-8">', html)
+            self.assertIn("max-width:860px", html)
+            self.assertIn("A summative assessment", html)
+            self.assertIn("Configuration", html)
+            self.assertIn('<div class="photos">', html)
 
 
 if __name__ == "__main__":

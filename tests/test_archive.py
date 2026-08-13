@@ -62,6 +62,9 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertIn("Child: Riley", markdown)
             self.assertTrue(markdown.startswith("# Riley's Famly Archive\n"))
             self.assertIn("![Photo 1](<2024-01-02/photo one.jpg>)", markdown)
+            html = (root / "archive.html").read_text()
+            self.assertIn("<title>Riley&#x27;s Famly Archive</title>", html)
+            self.assertIn("<h1>Riley&#x27;s Famly Archive</h1>", html)
 
     def test_existing_json_is_merged_and_duplicate_tagged_photo_is_hidden(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +164,32 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertTrue(markdown.startswith("# Famly Archive\n"))
             self.assertIn("Hello **world**", markdown)
             self.assertEqual(text_to_markdown("<p>One</p><p>Two</p>"), "One\n\nTwo")
+
+    def test_empty_assessment_block_is_not_rendered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            exporter.add_entry(
+                entry_id="journey:empty-assessment",
+                source="journey",
+                kind="ASSESSMENT",
+                date="2024-01-01T10:00:00Z",
+                author="Rachel",
+                text="Assessment summary",
+                assessment={
+                    "setting": {},
+                    "areas": [],
+                    "custom_fields": [{"label": "Empty", "value": ""}],
+                },
+            )
+            exporter.save()
+
+            markdown = (root / "archive.md").read_text()
+            html = (root / "archive.html").read_text()
+            self.assertIn("Assessment summary", markdown)
+            self.assertNotIn("### Assessment", markdown)
+            self.assertIn("Assessment summary", html)
+            self.assertNotIn('<section class="assessment">', html)
 
 
 if __name__ == "__main__":

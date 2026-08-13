@@ -294,6 +294,7 @@ class ArchiveExporter:
         )
         temporary_path.replace(self.json_path)
         write_markdown(self.json_path, self.markdown_path)
+        write_html(self.json_path, self.html_path)
 
 
 class _TextToMarkdownParser(HTMLParser):
@@ -685,5 +686,325 @@ def write_markdown(json_path: Path, output_path: Path | None = None) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         render_markdown(payload, json_path, output_path), encoding="utf-8"
+    )
+    return output_path
+
+
+def _html_text(value) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False)
+    text = text_to_markdown(value)
+    paragraphs = []
+    for paragraph in re.split(r"\n{2,}", text):
+        escaped = html_escape(paragraph.strip()).replace("\n", "<br>")
+        escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", escaped)
+        if escaped:
+            paragraphs.append(f"<p>{escaped}</p>")
+    return "".join(paragraphs)
+
+
+def _html_assessment(assessment: dict) -> str:
+    parts = ['<section class="assessment"><h3>Assessment</h3>']
+    setting = assessment.get("setting") or {}
+    if setting.get("title"):
+        parts.append(
+            '<p class="configuration">Configuration: '
+            f"{html_escape(str(setting['title']))}</p>"
+        )
+
+    for area_result in assessment.get("areas") or []:
+        area = area_result.get("area") or {}
+        title = html_escape(str(area.get("title") or "Assessment area"))
+        option = (area_result.get("assessment_option") or {}).get("label")
+        age_band = (area_result.get("age_band") or {}).get("label")
+        refinement = area_result.get("refinement")
+        result = option or refinement or age_band
+        parts.append('<div class="assessment-row">')
+        parts.append(f"<h4>{title}</h4>")
+        if result:
+            parts.append(f'<p class="result">{html_escape(str(result))}</p>')
+        if age_band and age_band != result:
+            parts.append(
+                f'<p class="assessment-note">Age band: {html_escape(str(age_band))}</p>'
+            )
+        if area_result.get("note"):
+            parts.append(
+                f'<div class="assessment-note">{_html_text(area_result["note"])}</div>'
+            )
+        parts.append("</div>")
+
+    custom_fields = assessment.get("custom_fields") or []
+    if custom_fields:
+        parts.append("<h4>Additional assessment information</h4>")
+        parts.append('<dl class="details">')
+        for field in custom_fields:
+            value = field.get("value")
+            if value in (None, ""):
+                continue
+            label = html_escape(str(field.get("label") or "Field"))
+            parts.extend([f"<dt>{label}</dt>", f"<dd>{_html_text(value)}</dd>"])
+        parts.append("</dl>")
+    parts.append("</section>")
+    return "".join(parts)
+
+
+def _html_media(entry: dict, json_path: Path, output_path: Path) -> str:
+    grouped: dict[str, list[dict]] = {}
+    for item in entry.get("media", []):
+        grouped.setdefault(item.get("kind", "file"), []).append(item)
+
+    parts = []
+    photo_paths = []
+    for item in grouped.get("photo", []):
+        path = _relative_media_path(item, json_path, output_path)
+        if path:
+            photo_paths.append(path)
+    if photo_paths:
+        parts.append('<div class="photos">')
+        gallery_id = _gallery_id(str(entry.get("entry_id") or entry.get("date")))
+        gallery_caption = _display_date(entry.get("date"))
+        remaining_count = len(photo_paths) - 1 if len(photo_paths) >= 3 else 0
+        for index, path in enumerate(photo_paths):
+            classes = ["photo"]
+            if len(photo_paths) == 1:
+                classes.append("wide")
+            if len(photo_paths) >= 3 and index == 0:
+                classes.append("hero")
+            if (
+                len(photo_paths) >= 3
+                and remaining_count % 2 == 1
+                and index == len(photo_paths) - 1
+            ):
+                classes.append("wide")
+            escaped_path = html_escape(path, quote=True)
+            class_name = " ".join(classes)
+            parts.append(
+                f'<a class="{class_name}" href="{escaped_path}" '
+                f'data-gallery="{gallery_id}" '
+                f'data-caption="{html_escape(gallery_caption, quote=True)}">'
+                f'<img src="{escaped_path}" alt="Photo {index + 1}" loading="lazy">'
+                "</a>"
+            )
+        parts.append("</div>")
+
+    videos = grouped.get("video", [])
+    if videos:
+        parts.append('<section class="attachments"><h3>Videos</h3>')
+        for item in videos:
+            path = _relative_media_path(item, json_path, output_path)
+            if path:
+                escaped_path = html_escape(path, quote=True)
+                parts.append(
+                    f'<video controls preload="metadata" src="{escaped_path}"></video>'
+                )
+        parts.append("</section>")
+
+    files = grouped.get("file", [])
+    if files:
+        parts.append('<section class="attachments"><h3>Files</h3><ul>')
+        for item in files:
+            path = _relative_media_path(item, json_path, output_path)
+            if path:
+                escaped_path = html_escape(path, quote=True)
+                name = html_escape(str(item.get("filename") or Path(path).name))
+                parts.append(f'<li><a href="{escaped_path}">{name}</a></li>')
+        parts.append("</ul></section>")
+    return "".join(parts)
+
+
+def _html_photo_week(group: dict, json_path: Path, output_path: Path) -> str:
+    photo_items = _weekly_photo_items(group)
+    gallery_id = _gallery_id(str(group.get("entry_id")))
+    parts = [
+        '<article class="post photo-week" data-entry-category="weekly-photos">',
+        '<header class="post-header">',
+    ]
+    parts.append(f"<h2>{html_escape(_display_week(group.get('date')))}</h2>")
+    parts.append('<span class="badge">Weekly photos</span></header>')
+    parts.append('<div class="meta">')
+    children = ", ".join(_weekly_children(group))
+    if children:
+        parts.append(f"<span>Child: {html_escape(children)}</span>")
+    parts.append(f"<span>{len(photo_items)} photos</span></div>")
+
+    parent_posts = _weekly_parent_posts(group)
+    if parent_posts:
+        parts.append('<section class="weekly-summary"><h3>This week</h3>')
+        for post in parent_posts:
+            parts.append('<div class="weekly-post-description">')
+            parts.append(_html_text(post["text"]))
+            attribution = f"Feed post from {_display_date(post.get('date'))}"
+            author = (post.get("author") or {}).get("name")
+            if author:
+                attribution += f", by {author}"
+            parts.append(
+                f'<p class="weekly-post-attribution">{html_escape(attribution)}</p>'
+            )
+            parts.append("</div>")
+        parts.append("</section>")
+
+    parts.append('<div class="photos weekly-photos">')
+    remaining_count = len(photo_items) - 1 if len(photo_items) >= 3 else 0
+    for index, (entry, item) in enumerate(photo_items):
+        path = _relative_media_path(item, json_path, output_path)
+        if not path:
+            continue
+        classes = ["weekly-photo"]
+        if len(photo_items) == 1:
+            classes.append("wide")
+        if len(photo_items) >= 3 and index == 0:
+            classes.append("hero")
+        if (
+            len(photo_items) >= 3
+            and remaining_count % 2 == 1
+            and index == len(photo_items) - 1
+        ):
+            classes.append("wide")
+        escaped_path = html_escape(path, quote=True)
+        date = _display_date(entry.get("date"))
+        lightbox_caption = date
+        if entry.get("text"):
+            caption_text = text_to_markdown(str(entry["text"])).replace("\n", " ")
+            lightbox_caption = f"{date} | {caption_text}"
+        parts.append(f'<figure class="{" ".join(classes)}">')
+        parts.append(
+            f'<a class="photo" href="{escaped_path}" '
+            f'data-gallery="{gallery_id}" '
+            f'data-caption="{html_escape(lightbox_caption, quote=True)}">'
+            f'<img src="{escaped_path}" alt="Photo from {html_escape(date)}" loading="lazy">'
+            "</a>"
+        )
+        parts.append(f"<figcaption><time>{html_escape(date)}</time>")
+        author = (entry.get("author") or {}).get("name")
+        if author:
+            parts.append(
+                f'<span class="photo-author">By {html_escape(str(author))}</span>'
+            )
+        if entry.get("text"):
+            parts.append(
+                f'<div class="photo-caption">{_html_text(entry["text"])}</div>'
+            )
+        parts.append("</figcaption></figure>")
+    parts.append("</div></article>")
+    return "".join(parts)
+
+
+def render_html(payload: dict, json_path: Path, output_path: Path) -> str:
+    entries = sorted(payload.get("entries", []), key=_entry_sort_key)
+    presented_entries = _presentation_entries(entries)
+    archive_title = html_escape(_archive_title(payload))
+    parts = [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        '<meta name="referrer" content="no-referrer">',
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';\">",
+        f"<title>{archive_title}</title>",
+        """<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6}
+.archive{max-width:860px;margin:0 auto;padding:56px 24px 96px}
+.archive-header{text-align:center;margin-bottom:40px}
+.archive-header h1{font-family:Georgia,serif;font-size:clamp(2.2rem,6vw,4rem);font-weight:500;line-height:1;margin:0 0 12px}
+.generated{color:#766d64;font-size:.9rem}
+.post{background:#fff;border:1px solid #e5ded5;border-radius:18px;padding:clamp(22px,5vw,44px);margin:0 0 28px;box-shadow:0 10px 30px rgba(65,49,35,.06);overflow:hidden}
+.post-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
+.post-header h2{font-family:Georgia,serif;font-size:clamp(1.7rem,4vw,2.35rem);font-weight:500;line-height:1.15;margin:0}
+.badge{background:#efe9e1;border-radius:999px;color:#665d55;font-size:.72rem;font-weight:700;letter-spacing:.06em;padding:6px 10px;text-transform:uppercase;white-space:nowrap}
+.meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:#766d64;font-size:.86rem;margin:-8px 0 24px}
+.body{font-family:Georgia,serif;font-size:1.08rem}
+.body p:first-child{margin-top:0}.body p:last-child{margin-bottom:0}
+.weekly-summary{background:#f8f5f0;border-left:3px solid #b9aa99;border-radius:0 10px 10px 0;margin:0 0 24px;padding:16px 18px}
+.weekly-summary h3{font-size:.82rem;letter-spacing:.06em;margin:0 0 10px;text-transform:uppercase}.weekly-post-description{font-family:Georgia,serif}.weekly-post-description+ .weekly-post-description{border-top:1px solid #e5ded5;margin-top:14px;padding-top:14px}.weekly-post-attribution{color:#766d64;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:.76rem;margin:7px 0 0}
+.photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:28px -12px 4px}
+.photo{background:#ece7e0;border-radius:10px;display:block;min-height:180px;overflow:hidden}
+.photo.hero,.photo.wide{grid-column:1/-1}
+.photo img{display:block;height:100%;max-height:520px;object-fit:contain;width:100%}
+.photo.hero img{max-height:620px}
+.weekly-photo{margin:0;min-width:0}.weekly-photo.hero,.weekly-photo.wide{grid-column:1/-1}
+.weekly-photo .photo{min-height:180px}.weekly-photo.hero img{max-height:620px}
+.weekly-photo figcaption{color:#766d64;font-size:.78rem;line-height:1.4;padding:7px 3px 4px}
+.photo-author{margin-left:10px}.photo-caption{color:#4f4841;font-family:Georgia,serif;font-size:.9rem;margin-top:4px}
+.photo-caption p{margin:0}
+.assessment,.next-step,.attachments{background:#f8f5f0;border-radius:12px;margin-top:26px;padding:20px}
+.assessment h3,.next-step h3,.attachments h3{font-size:1rem;margin:0 0 14px}
+.configuration{color:#766d64;font-size:.88rem;margin-top:-8px}
+.assessment-row{border-top:1px solid #e5ded5;padding:14px 0}
+.assessment-row h4{margin:0}.result{color:#506343;font-weight:700;margin:3px 0}.assessment-note{color:#625a52;font-size:.92rem}
+.details{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:8px 16px}.details dt{font-weight:700}.details dd{margin:0}
+.attachments video{border-radius:8px;display:block;margin-top:12px;max-height:520px;width:100%}
+.attachments a{color:#395d73}
+.empty{text-align:center;color:#766d64}
+@media(max-width:620px){.archive{padding:28px 12px 60px}.post{border-radius:12px}.post-header{display:block}.badge{display:inline-block;margin-top:12px}.photo,.weekly-photo .photo{min-height:120px}.details{display:block}.details dd{margin:0 0 10px}}
+</style>""",
+        "</head>",
+        "<body>",
+        '<main class="archive">',
+        f'<header class="archive-header"><h1>{archive_title}</h1>',
+    ]
+    generated_at = payload.get("generated_at")
+    if generated_at:
+        parts.append(
+            f'<p class="generated">Generated {_display_date(generated_at)}</p>'
+        )
+    parts.append("</header>")
+
+    for entry in presented_entries:
+        if entry.get("presentation") == "photo_week":
+            parts.append(_html_photo_week(entry, json_path, output_path))
+            continue
+
+        kind = _label(entry.get("kind") or entry.get("source") or "Entry")
+        parts.append('<article class="post">')
+        parts.append('<header class="post-header">')
+        parts.append(f"<h2>{html_escape(_display_day(entry.get('date')))}</h2>")
+        parts.append(f'<span class="badge">{html_escape(kind)}</span>')
+        parts.append("</header>")
+        parts.append('<div class="meta">')
+        author = (entry.get("author") or {}).get("name")
+        if author:
+            parts.append(f"<span>Written by {html_escape(str(author))}</span>")
+        children = ", ".join(
+            str(child.get("name"))
+            for child in entry.get("children", [])
+            if child.get("name")
+        )
+        if children:
+            parts.append(f"<span>Child: {html_escape(children)}</span>")
+        parts.append(f"<span>Posted {_display_date(entry.get('date'))}</span>")
+        if entry.get("observed_at"):
+            parts.append(f"<span>Observed {_display_date(entry['observed_at'])}</span>")
+        parts.append("</div>")
+
+        if entry.get("text"):
+            parts.append(f'<div class="body">{_html_text(entry["text"])}</div>')
+        if _has_assessment_content(entry.get("assessment")):
+            parts.append(_html_assessment(entry["assessment"]))
+        if entry.get("next_step"):
+            parts.append(
+                '<section class="next-step"><h3>What\'s next</h3>'
+                f"{_html_text(entry['next_step'])}</section>"
+            )
+        parts.append(_html_media(entry, json_path, output_path))
+        parts.append("</article>")
+
+    if not entries:
+        parts.append('<p class="empty">No archived entries were found.</p>')
+    parts.extend(["</main>", "</body>", "</html>"])
+    return "\n".join(parts) + "\n"
+
+
+def write_html(json_path: Path, output_path: Path | None = None) -> Path:
+    json_path = json_path.resolve()
+    output_path = (output_path or json_path.with_suffix(".html")).resolve()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        render_html(payload, json_path, output_path), encoding="utf-8"
     )
     return output_path
