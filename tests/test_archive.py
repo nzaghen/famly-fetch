@@ -65,6 +65,8 @@ class ArchiveExporterTests(unittest.TestCase):
             html = (root / "archive.html").read_text()
             self.assertIn("<title>Riley&#x27;s Famly Archive</title>", html)
             self.assertIn("<h1>Riley&#x27;s Famly Archive</h1>", html)
+            self.assertIn('data-filter="other"', html)
+            self.assertEqual(html.count('data-entry-category="other"'), 2)
 
     def test_existing_json_is_merged_and_duplicate_tagged_photo_is_hidden(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -190,6 +192,90 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertNotIn("### Assessment", markdown)
             self.assertIn("Assessment summary", html)
             self.assertNotIn('<section class="assessment">', html)
+
+    def test_standalone_photos_are_grouped_by_week_separately_from_journey(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+
+            def photo(media_id):
+                path = root / "photos" / f"{media_id}.jpg"
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"photo")
+                return exporter.media(media_id, "photo", path)
+
+            exporter.add_entry(
+                entry_id="tagged_photo:monday",
+                source="tagged_photo",
+                kind="photo",
+                date="2024-01-01T10:00:00Z",
+                author=None,
+                children=[{"id": "child-1", "name": "Riley"}],
+                text="Monday caption",
+                media=[photo("monday")],
+            )
+            exporter.add_entry(
+                entry_id="journey:tuesday",
+                source="journey",
+                kind="observation",
+                date="2024-01-02T10:00:00Z",
+                author="Rachel",
+                text="A separate observation",
+                media=[photo("journey")],
+            )
+            exporter.add_entry(
+                entry_id="tagged_photo:wednesday",
+                source="tagged_photo",
+                kind="photo",
+                date="2024-01-03T11:00:00Z",
+                author=None,
+                children=[{"id": "child-1", "name": "Riley"}],
+                text=None,
+                media=[photo("wednesday")],
+            )
+            exporter.add_entry(
+                entry_id="tagged_photo:next-week",
+                source="tagged_photo",
+                kind="photo",
+                date="2024-01-08T12:00:00Z",
+                author=None,
+                children=[{"id": "child-1", "name": "Riley"}],
+                text=None,
+                media=[photo("next-week")],
+            )
+            exporter.save()
+
+            payload = json.loads((root / "archive.json").read_text())
+            self.assertEqual(len(payload["entries"]), 4)
+
+            markdown = (root / "archive.md").read_text()
+            self.assertEqual(markdown.count("## Week of"), 2)
+            self.assertIn("## Week of 01 January 2024", markdown)
+            self.assertIn("- Photos: 2", markdown)
+            self.assertIn("Photo 1: 01 January 2024, 10:00", markdown)
+            self.assertIn("Monday caption", markdown)
+            self.assertEqual(markdown.count("A separate observation"), 1)
+
+            html = (root / "archive.html").read_text()
+            self.assertEqual(html.count('class="post photo-week"'), 2)
+            self.assertIn("Week of 01 January 2024", html)
+            self.assertIn("2 photos", html)
+            self.assertEqual(html.count("A separate observation"), 1)
+            self.assertIn('class="weekly-photo"', html)
+            self.assertIn(".weekly-photo .photo{min-height:180px}", html)
+            self.assertNotIn(".weekly-photo .photo{aspect-ratio", html)
+            self.assertIn("01 January 2024, 10:00 | Monday caption", html)
+            self.assertNotRegex(html, r'(?:src|href)="https?://')
+            self.assertNotIn("fetch(", html)
+            self.assertNotIn("XMLHttpRequest", html)
+            self.assertIn('data-filter="weekly-photos"', html)
+            self.assertIn('data-filter="observation"', html)
+            self.assertIn('data-filter="assessment-review"', html)
+            self.assertNotIn('data-filter="other"', html)
+            self.assertEqual(html.count('data-entry-category="weekly-photos"'), 2)
+            self.assertEqual(html.count('data-entry-category="observation"'), 1)
+            self.assertEqual(html.count('data-entry-category="other"'), 0)
+            self.assertIn("function applyFilter(filter)", html)
 
 
 if __name__ == "__main__":

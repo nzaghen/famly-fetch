@@ -218,6 +218,13 @@ not consistently support page-width styling. It uses local system fonts and
 local archive media only. Photos preserve their complete aspect ratio, and
 clicking one opens its full-resolution local file.
 
+The filter bar can show everything or narrow the archive to weekly photos,
+Journey observations, assessments and progress reviews, or other entries such
+as notes and messages. Parent feed posts already used to describe weekly-photo
+cards are not repeated as standalone cards, although they remain unchanged in
+`archive.json`. The Other filter is omitted when it would be empty. Filtering
+runs entirely in the local file.
+
 Regenerate Markdown and HTML directly from the saved JSON without contacting
 Famly:
 

@@ -896,6 +896,15 @@ def render_html(payload: dict, json_path: Path, output_path: Path) -> str:
     entries = sorted(payload.get("entries", []), key=_entry_sort_key)
     presented_entries = _presentation_entries(entries)
     archive_title = html_escape(_archive_title(payload))
+    category_counts = {
+        category: sum(_entry_category(entry) == category for entry in presented_entries)
+        for category in (
+            "weekly-photos",
+            "observation",
+            "assessment-review",
+            "other",
+        )
+    }
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -912,7 +921,12 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .archive-header{text-align:center;margin-bottom:40px}
 .archive-header h1{font-family:Georgia,serif;font-size:clamp(2.2rem,6vw,4rem);font-weight:500;line-height:1;margin:0 0 12px}
 .generated{color:#766d64;font-size:.9rem}
+.filters{align-items:center;background:rgba(244,241,236,.94);border:1px solid #ded6cc;border-radius:16px;display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin:0 0 28px;padding:8px;position:sticky;top:10px;z-index:20}
+.filter-button{appearance:none;background:transparent;border:0;border-radius:10px;color:#665d55;cursor:pointer;font:inherit;font-size:.82rem;font-weight:650;padding:8px 12px}
+.filter-button:hover{background:#e9e2d9}.filter-button[aria-pressed="true"]{background:#554b42;color:#fff}
+.filter-count{font-size:.72rem;margin-left:4px;opacity:.72}.filter-empty{background:#fff;border:1px solid #e5ded5;border-radius:14px;color:#766d64;padding:24px;text-align:center}
 .post{background:#fff;border:1px solid #e5ded5;border-radius:18px;padding:clamp(22px,5vw,44px);margin:0 0 28px;box-shadow:0 10px 30px rgba(65,49,35,.06);overflow:hidden}
+.post[hidden]{display:none}
 .post-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
 .post-header h2{font-family:Georgia,serif;font-size:clamp(1.7rem,4vw,2.35rem);font-weight:500;line-height:1.15;margin:0}
 .badge{background:#efe9e1;border-radius:999px;color:#665d55;font-size:.72rem;font-weight:700;letter-spacing:.06em;padding:6px 10px;text-transform:uppercase;white-space:nowrap}
@@ -940,7 +954,7 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .attachments video{border-radius:8px;display:block;margin-top:12px;max-height:520px;width:100%}
 .attachments a{color:#395d73}
 .empty{text-align:center;color:#766d64}
-@media(max-width:620px){.archive{padding:28px 12px 60px}.post{border-radius:12px}.post-header{display:block}.badge{display:inline-block;margin-top:12px}.photo,.weekly-photo .photo{min-height:120px}.details{display:block}.details dd{margin:0 0 10px}}
+@media(max-width:620px){.archive{padding:28px 12px 60px}.filters{justify-content:flex-start;overflow-x:auto;top:6px;flex-wrap:nowrap}.filter-button{white-space:nowrap}.post{border-radius:12px}.post-header{display:block}.badge{display:inline-block;margin-top:12px}.photo,.weekly-photo .photo{min-height:120px}.details{display:block}.details dd{margin:0 0 10px}}
 </style>""",
         "</head>",
         "<body>",
@@ -952,7 +966,26 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
         parts.append(
             f'<p class="generated">Generated {_display_date(generated_at)}</p>'
         )
-    parts.append("</header>")
+    parts.extend(
+        [
+            "</header>",
+            '<nav class="filters" aria-label="Filter archive entries">',
+            f'<button class="filter-button" type="button" data-filter="all" aria-pressed="true">All <span class="filter-count">{len(presented_entries)}</span></button>',
+            f'<button class="filter-button" type="button" data-filter="weekly-photos" aria-pressed="false">Weekly photos <span class="filter-count">{category_counts["weekly-photos"]}</span></button>',
+            f'<button class="filter-button" type="button" data-filter="observation" aria-pressed="false">Observations <span class="filter-count">{category_counts["observation"]}</span></button>',
+            f'<button class="filter-button" type="button" data-filter="assessment-review" aria-pressed="false">Assessments &amp; reviews <span class="filter-count">{category_counts["assessment-review"]}</span></button>',
+        ]
+    )
+    if category_counts["other"]:
+        parts.append(
+            f'<button class="filter-button" type="button" data-filter="other" aria-pressed="false">Other <span class="filter-count">{category_counts["other"]}</span></button>'
+        )
+    parts.extend(
+        [
+            "</nav>",
+            '<p class="filter-empty" data-filter-empty hidden>No entries match this filter.</p>',
+        ]
+    )
 
     for entry in presented_entries:
         if entry.get("presentation") == "photo_week":
@@ -960,7 +993,8 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
             continue
 
         kind = _label(entry.get("kind") or entry.get("source") or "Entry")
-        parts.append('<article class="post">')
+        category = _entry_category(entry)
+        parts.append(f'<article class="post" data-entry-category="{category}">')
         parts.append('<header class="post-header">')
         parts.append(f"<h2>{html_escape(_display_day(entry.get('date')))}</h2>")
         parts.append(f'<span class="badge">{html_escape(kind)}</span>')
@@ -995,7 +1029,38 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 
     if not entries:
         parts.append('<p class="empty">No archived entries were found.</p>')
-    parts.extend(["</main>", "</body>", "</html>"])
+    parts.extend(
+        [
+            "</main>",
+            """<script>
+(() => {
+  "use strict";
+  const filterButtons = Array.from(document.querySelectorAll("[data-filter]"));
+  const archiveEntries = Array.from(document.querySelectorAll("[data-entry-category]"));
+  const filterEmpty = document.querySelector("[data-filter-empty]");
+
+  function applyFilter(filter) {
+    let visibleCount = 0;
+    archiveEntries.forEach(entry => {
+      const visible = filter === "all" || entry.dataset.entryCategory === filter;
+      entry.hidden = !visible;
+      if (visible) visibleCount += 1;
+    });
+    filterButtons.forEach(button => {
+      button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
+    });
+    filterEmpty.hidden = visibleCount !== 0;
+  }
+
+  filterButtons.forEach(button => button.addEventListener("click", () => {
+    applyFilter(button.dataset.filter);
+  }));
+})();
+</script>""",
+            "</body>",
+            "</html>",
+        ]
+    )
     return "\n".join(parts) + "\n"
 
 
