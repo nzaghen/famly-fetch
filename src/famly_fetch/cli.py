@@ -63,6 +63,11 @@ def get_version():
     help="Download all images from all posts (in the feed)",
 )
 @click.option(
+    "--tagged-post-text",
+    is_flag=True,
+    help="Archive parent feed-post text for tagged photos",
+)
+@click.option(
     "--include-files",
     is_flag=True,
     help="Also download non-image file attachments (PDFs, docs, etc.) from messages, notes, and journeys",
@@ -165,6 +170,7 @@ def main(
     messages: bool,
     liked: bool,
     feed: bool,
+    tagged_post_text: bool,
     include_files: bool,
     include_videos: bool,
     export_text: bool,
@@ -178,6 +184,9 @@ def main(
     state_file: Path,
 ):
     """Fetch kids' images from famly.co"""
+
+    if tagged_post_text and not export_text:
+        raise click.UsageError("--tagged-post-text requires --export-text")
 
     if state_file is None:
         state_file = pictures_folder / "state.json"
@@ -235,6 +244,9 @@ def main(
 
         if liked:
             famly_downloader.download_images_from_feed(parent_ids)
+
+        if tagged_post_text:
+            famly_downloader.archive_parent_posts_for_tagged_photos()
 
         if feed:
             famly_downloader.download_all_images_from_feed()

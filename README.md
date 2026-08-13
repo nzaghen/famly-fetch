@@ -172,6 +172,29 @@ progress checks, and up-to-speed observations. Structured assessments retain
 their configuration, learning areas, selected options or age bands, per-area
 notes, custom fields, observed date, and "what's next" text.
 
+Tagged photos are archived automatically unless `--no-tagged` is used. A
+tagged-photo entry is suppressed only when the same photo is already attached
+to a Journey entry; a duplicate in a feed post does not suppress it.
+
+Fetch newly tagged photos and archive their parent feed-post text in one run:
+
+```bash
+famly-fetch --export-text --tagged-post-text --pictures-folder pictures
+```
+
+The saved state skips photos already downloaded. The command then scans feed
+metadata from Famly, retains only posts matching archived tagged-photo image
+IDs, and refers to the local files. It does not request feed image files or
+retain unmatched posts.
+
+To enrich only photos already in the archive without downloading newly tagged
+photos, add `--no-tagged`:
+
+```bash
+famly-fetch --no-tagged --export-text --tagged-post-text \
+  --pictures-folder pictures
+```
+
 Records use this general shape (fields are empty where they do not apply):
 
 ```json
@@ -237,6 +260,8 @@ Options:
                                   parents from all posts (in the feed)
   -f, --feed                      Download all images from all posts (in the
                                   feed)
+  --tagged-post-text              Archive parent feed-post text for tagged
+                                  photos
   --include-files                 Also download non-image file attachments
                                   (PDFs, docs, etc.) from messages, notes, and
                                   journeys

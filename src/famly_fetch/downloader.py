@@ -441,6 +441,20 @@ class FamlyDownloader:
             click.echo(f" - image {img.img_id} at {img.date} ({img_no}/{len(imgs)})")
 
             file_path = self.download_file_path(img, first_name)
+            if self.archive:
+                archive_item = self._archive_media(img.img_id, "photo", file_path)
+                self.archive.add_entry(
+                    entry_id=self.archive.entry_id(
+                        "tagged_photo", img.img_id, child_id, img.date.isoformat()
+                    ),
+                    source="tagged_photo",
+                    kind="photo",
+                    date=img.date.isoformat(),
+                    author=None,
+                    children=[{"id": child_id, "name": first_name}],
+                    text=img.text,
+                    media=[archive_item] if archive_item else [],
+                )
             if img.img_id in self.downloaded_images:
                 click.secho(
                     f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
@@ -537,6 +551,103 @@ class FamlyDownloader:
                     return
         self.save_state()
 
+    @staticmethod
+    def _feed_author(feed_item: dict) -> str | None:
+        for container_key in ("author", "createdBy", "originator"):
+            container = feed_item.get(container_key) or {}
+            if isinstance(container, str):
+                return container
+            for key in ("title", "fullName", "name"):
+                value = container.get(key)
+                if isinstance(value, str) and value:
+                    return value
+                if isinstance(value, dict):
+                    nested = value.get("fullName")
+                    if nested:
+                        return nested
+        return None
+
+    def _record_feed_entry(
+        self, feed_item: dict, date: str, archived_media: list[dict]
+    ):
+        if not self.archive:
+            return
+        feed_id = self._remote_id(
+            feed_item, "feedItemId", "postId", "id", "originatorId"
+        )
+        author = self._feed_author(feed_item)
+        body = feed_item.get("body") or ""
+        self.archive.add_entry(
+            entry_id=self.archive.entry_id("feed", feed_id, date, body, author),
+            source="feed",
+            kind="post",
+            date=date,
+            author=author,
+            text=body,
+            media=archived_media,
+            metadata={"originator_id": feed_item.get("originatorId")},
+        )
+
+    def archive_parent_posts_for_tagged_photos(self):
+        """Archive matching feed-post text without downloading any feed media."""
+
+        if not self.archive:
+            raise ValueError("Parent post text requires --export-text")
+        tagged_media = self.archive.media_index("tagged_photo", "photo")
+        if not tagged_media:
+            click.secho(
+                "No archived tagged photos were found; no parent posts to match.",
+                fg="yellow",
+            )
+            return
+
+        click.secho(
+            "Matching archived tagged photos to parent feed-post text...", fg="green"
+        )
+        unmatched_ids = set(tagged_media)
+        matched_posts = 0
+        cursor = None
+        older_than = None
+        while unmatched_ids:
+            response = self._apiClient.feed(
+                cursor=cursor, older_than=older_than, limit=20
+            )
+            feed_items = response.get("feedItems") or []
+            if not feed_items:
+                break
+            last_item = feed_items[-1]
+            cursor = last_item.get("feedItemId")
+            older_than = last_item.get("createdDate")
+
+            for feed_item in feed_items:
+                if not str(feed_item.get("originatorId") or "").startswith("Post:"):
+                    continue
+                matched_media = []
+                for image in feed_item.get("images") or []:
+                    image_id = image.get("imageId") or image.get("id")
+                    if image_id is None:
+                        continue
+                    image_id = str(image_id)
+                    if image_id in tagged_media:
+                        matched_media.append(tagged_media[image_id])
+                        unmatched_ids.discard(image_id)
+                if not matched_media:
+                    continue
+                self._record_feed_entry(
+                    feed_item,
+                    feed_item["createdDate"],
+                    matched_media,
+                )
+                matched_posts += 1
+
+            if not cursor and not older_than:
+                break
+
+        click.echo(
+            f"Matched {matched_posts} parent feed posts for "
+            f"{len(tagged_media) - len(unmatched_ids)} of {len(tagged_media)} tagged photos."
+        )
+
     def download_images_from_feed(self, liked_by_ids: set[str]):
         click.secho("Downloading liked images in posts...", fg="green")
 
@@ -557,6 +668,8 @@ class FamlyDownloader:
                     # not a Post item
                     continue
                 create_date = feed_item["createdDate"]
+                archived_media = []
+                should_stop = False
                 for img_dict in feed_item["images"]:
                     if not (
                         img_dict["liked"]
@@ -575,36 +688,46 @@ class FamlyDownloader:
                     )
                     click.echo(f" - image {img.img_id} from post at {create_date}")
 
+                    file_path = self.download_file_path(img, "post")
+                    archive_item = self._archive_media(img.img_id, "photo", file_path)
+                    if archive_item:
+                        archived_media.append(archive_item)
+
                     if img.img_id in self.downloaded_images:
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
                         )
                         if self.stop_on_existing:
-                            return
+                            should_stop = True
+                            break
                         else:
                             continue
-                    file_path = self.download_file_path(img, "post")
                     self.fetch_image(img, file_path)
                     self.mark_as_downloaded(img.img_id)
 
                 feed_text = feed_item.get("body") if self.text_comments else None
-                if self.include_files:
-                    if self._download_files_from_item(
+                if self.include_files and not should_stop:
+                    should_stop = self._download_files_from_item(
                         feed_item.get("files") or [],
                         date=create_date,
                         text=feed_text,
                         filename_prefix="post",
-                    ):
-                        return
-                if self.include_videos:
-                    if self._download_videos_from_item(
+                        archive_media=archived_media,
+                    )
+                if self.include_videos and not should_stop:
+                    should_stop = self._download_videos_from_item(
                         feed_item.get("videos") or [],
                         date=create_date,
                         text=feed_text,
                         filename_prefix="post",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
+
+                self._record_feed_entry(feed_item, create_date, archived_media)
+                if should_stop:
+                    self.save_state()
+                    return
 
         self.save_state()
 
@@ -628,6 +751,8 @@ class FamlyDownloader:
                 if not feed_item["originatorId"].startswith("Post:"):
                     continue
                 create_date = feed_item["createdDate"]
+                archived_media = []
+                should_stop = False
                 for img_dict in feed_item["images"]:
                     img = Image.from_dict(
                         img_dict,
@@ -636,16 +761,21 @@ class FamlyDownloader:
                     )
                     click.echo(f" - image {img.img_id} from post at {create_date}")
 
+                    file_path = self.download_file_path(img, "post")
+                    archive_item = self._archive_media(img.img_id, "photo", file_path)
+                    if archive_item:
+                        archived_media.append(archive_item)
+
                     if img.img_id in self.downloaded_images:
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
                         )
                         if self.stop_on_existing:
-                            return
+                            should_stop = True
+                            break
                         else:
                             continue
-                    file_path = self.download_file_path(img, "post")
                     self.fetch_image(img, file_path)
                     self.mark_as_downloaded(img.img_id)
                     self.save_state()
@@ -658,22 +788,27 @@ class FamlyDownloader:
                         time.sleep(batch_pause)
 
                 feed_text = feed_item.get("body") if self.text_comments else None
-                if self.include_files:
-                    if self._download_files_from_item(
+                if self.include_files and not should_stop:
+                    should_stop = self._download_files_from_item(
                         feed_item.get("files") or [],
                         date=create_date,
                         text=feed_text,
                         filename_prefix="post",
-                    ):
-                        return
-                if self.include_videos:
-                    if self._download_videos_from_item(
+                        archive_media=archived_media,
+                    )
+                if self.include_videos and not should_stop:
+                    should_stop = self._download_videos_from_item(
                         feed_item.get("videos") or [],
                         date=create_date,
                         text=feed_text,
                         filename_prefix="post",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
+
+                self._record_feed_entry(feed_item, create_date, archived_media)
+                if should_stop:
+                    self.save_state()
+                    return
 
     def _download_files_from_item(
         self,
