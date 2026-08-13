@@ -945,6 +945,16 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .weekly-photo figcaption{color:#766d64;font-size:.78rem;line-height:1.4;padding:7px 3px 4px}
 .photo-author{margin-left:10px}.photo-caption{color:#4f4841;font-family:Georgia,serif;font-size:.9rem;margin-top:4px}
 .photo-caption p{margin:0}
+.lightbox{align-items:center;background:rgba(19,17,15,.96);display:flex;height:100dvh;inset:0;justify-content:center;padding:58px 76px 52px;position:fixed;width:100vw;z-index:1000}
+.lightbox[hidden]{display:none}.lightbox-open{overflow:hidden}
+.lightbox-stage{align-items:center;display:flex;height:100%;justify-content:center;margin:0;max-width:min(1500px,100%);position:relative;width:100%}
+.lightbox-image{display:block;max-height:calc(100dvh - 130px);max-width:100%;object-fit:contain}
+.lightbox-caption{bottom:-38px;color:#e7e0d8;font-size:.85rem;left:0;position:absolute;text-align:center;width:100%}
+.lightbox-counter{color:#d6cec5;font-size:.78rem;left:20px;position:fixed;top:18px}
+.lightbox-button{appearance:none;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);border-radius:999px;color:#fff;cursor:pointer;font:inherit;height:44px;position:fixed;width:44px}
+.lightbox-button:hover,.lightbox-button:focus-visible{background:rgba(255,255,255,.2);outline:2px solid #fff;outline-offset:2px}
+.lightbox-close{right:18px;top:14px}.lightbox-previous{left:18px;top:calc(50% - 22px)}.lightbox-next{right:18px;top:calc(50% - 22px)}
+.lightbox-button:disabled{cursor:default;opacity:.25}
 .assessment,.next-step,.attachments{background:#f8f5f0;border-radius:12px;margin-top:26px;padding:20px}
 .assessment h3,.next-step h3,.attachments h3{font-size:1rem;margin:0 0 14px}
 .configuration{color:#766d64;font-size:.88rem;margin-top:-8px}
@@ -954,7 +964,7 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
 .attachments video{border-radius:8px;display:block;margin-top:12px;max-height:520px;width:100%}
 .attachments a{color:#395d73}
 .empty{text-align:center;color:#766d64}
-@media(max-width:620px){.archive{padding:28px 12px 60px}.filters{justify-content:flex-start;overflow-x:auto;top:6px;flex-wrap:nowrap}.filter-button{white-space:nowrap}.post{border-radius:12px}.post-header{display:block}.badge{display:inline-block;margin-top:12px}.photo,.weekly-photo .photo{min-height:120px}.details{display:block}.details dd{margin:0 0 10px}}
+@media(max-width:620px){.archive{padding:28px 12px 60px}.filters{justify-content:flex-start;overflow-x:auto;top:6px;flex-wrap:nowrap}.filter-button{white-space:nowrap}.post{border-radius:12px}.post-header{display:block}.badge{display:inline-block;margin-top:12px}.photo,.weekly-photo .photo{min-height:120px}.details{display:block}.details dd{margin:0 0 10px}.lightbox{padding:54px 10px 58px}.lightbox-image{max-height:calc(100dvh - 122px)}.lightbox-previous{left:8px}.lightbox-next{right:8px}.lightbox-button{background:rgba(20,18,16,.62)}}
 </style>""",
         "</head>",
         "<body>",
@@ -1032,12 +1042,72 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
     parts.extend(
         [
             "</main>",
+            '<div class="lightbox" data-lightbox hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Photo gallery">',
+            '<span class="lightbox-counter" data-lightbox-counter></span>',
+            '<button class="lightbox-button lightbox-close" data-lightbox-close type="button" aria-label="Close gallery">&#10005;</button>',
+            '<button class="lightbox-button lightbox-previous" data-lightbox-previous type="button" aria-label="Previous photo">&#8592;</button>',
+            '<figure class="lightbox-stage" data-lightbox-stage>',
+            '<img class="lightbox-image" data-lightbox-image alt="">',
+            '<figcaption class="lightbox-caption" data-lightbox-caption></figcaption>',
+            "</figure>",
+            '<button class="lightbox-button lightbox-next" data-lightbox-next type="button" aria-label="Next photo">&#8594;</button>',
+            "</div>",
             """<script>
 (() => {
   "use strict";
+  const overlay = document.querySelector("[data-lightbox]");
+  const image = overlay.querySelector("[data-lightbox-image]");
+  const caption = overlay.querySelector("[data-lightbox-caption]");
+  const counter = overlay.querySelector("[data-lightbox-counter]");
+  const closeButton = overlay.querySelector("[data-lightbox-close]");
+  const previousButton = overlay.querySelector("[data-lightbox-previous]");
+  const nextButton = overlay.querySelector("[data-lightbox-next]");
+  const stage = overlay.querySelector("[data-lightbox-stage]");
+  const galleryLinks = Array.from(document.querySelectorAll("a[data-gallery]"));
   const filterButtons = Array.from(document.querySelectorAll("[data-filter]"));
   const archiveEntries = Array.from(document.querySelectorAll("[data-entry-category]"));
   const filterEmpty = document.querySelector("[data-filter-empty]");
+  let items = [];
+  let index = 0;
+  let lastFocus = null;
+  let pointerStart = null;
+
+  function render() {
+    const link = items[index];
+    image.src = link.href;
+    image.alt = link.querySelector("img")?.alt || "Archive photo";
+    caption.textContent = link.dataset.caption || "";
+    caption.hidden = !caption.textContent;
+    counter.textContent = `${index + 1} / ${items.length}`;
+    const single = items.length < 2;
+    previousButton.disabled = single;
+    nextButton.disabled = single;
+  }
+
+  function openGallery(link) {
+    items = galleryLinks.filter(item => item.dataset.gallery === link.dataset.gallery);
+    index = Math.max(0, items.indexOf(link));
+    lastFocus = document.activeElement;
+    render();
+    overlay.hidden = false;
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("lightbox-open");
+    closeButton.focus();
+  }
+
+  function closeGallery() {
+    overlay.hidden = true;
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("lightbox-open");
+    image.removeAttribute("src");
+    if (lastFocus instanceof HTMLElement) lastFocus.focus();
+  }
+
+  function move(amount) {
+    if (items.length < 2) return;
+    index = (index + amount + items.length) % items.length;
+    render();
+  }
 
   function applyFilter(filter) {
     let visibleCount = 0;
@@ -1052,9 +1122,32 @@ body{margin:0;background:#f4f1ec;color:#28231f;font-family:-apple-system,BlinkMa
     filterEmpty.hidden = visibleCount !== 0;
   }
 
+  galleryLinks.forEach(link => link.addEventListener("click", event => {
+    event.preventDefault();
+    openGallery(link);
+  }));
   filterButtons.forEach(button => button.addEventListener("click", () => {
     applyFilter(button.dataset.filter);
   }));
+  closeButton.addEventListener("click", closeGallery);
+  previousButton.addEventListener("click", () => move(-1));
+  nextButton.addEventListener("click", () => move(1));
+  overlay.addEventListener("click", event => {
+    if (event.target === overlay || event.target === stage) closeGallery();
+  });
+  document.addEventListener("keydown", event => {
+    if (overlay.hidden) return;
+    if (event.key === "Escape") closeGallery();
+    if (event.key === "ArrowLeft") move(-1);
+    if (event.key === "ArrowRight") move(1);
+  });
+  stage.addEventListener("pointerdown", event => { pointerStart = event.clientX; });
+  stage.addEventListener("pointerup", event => {
+    if (pointerStart === null) return;
+    const distance = event.clientX - pointerStart;
+    pointerStart = null;
+    if (Math.abs(distance) > 50) move(distance > 0 ? -1 : 1);
+  });
 })();
 </script>""",
             "</body>",

@@ -215,8 +215,12 @@ shown below the observation narrative.
 
 The HTML archive is recommended for browsing because Markdown applications do
 not consistently support page-width styling. It uses local system fonts and
-local archive media only. Photos preserve their complete aspect ratio, and
-clicking one opens its full-resolution local file.
+local archive media only. Photos preserve their complete aspect ratio. Clicking
+one opens a full-screen gallery; arrow buttons, keyboard arrow keys, or a swipe
+move within that post or weekly group, and Escape closes it. The dependency-free
+gallery code is embedded in the HTML—there is no library, CDN, web font,
+analytics, or network request. The content security policy blocks remote
+connections.
 
 The filter bar can show everything or narrow the archive to weekly photos,
 Journey observations, assessments and progress reviews, or other entries such

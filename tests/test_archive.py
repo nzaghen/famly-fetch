@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -193,6 +194,54 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertIn("Assessment summary", html)
             self.assertNotIn('<section class="assessment">', html)
 
+    def test_multiple_photos_render_as_clickable_editorial_grid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exporter = ArchiveExporter(root)
+            photos = []
+            for index in range(1, 4):
+                path = root / "photos" / f"photo {index}.jpg"
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"photo")
+                photos.append(exporter.media(f"photo-{index}", "photo", path))
+
+            exporter.add_entry(
+                entry_id="journey:grid",
+                source="journey",
+                kind="observation",
+                date="2024-01-01T00:00:00Z",
+                author="Rachel",
+                text="Three photos",
+                media=photos,
+            )
+            exporter.save()
+
+            markdown = (root / "archive.md").read_text()
+            html = (root / "archive.html").read_text()
+            self.assertIn('<table role="presentation"', markdown)
+            self.assertIn('<td colspan="2"', markdown)
+            self.assertEqual(markdown.count('<td width="50%"'), 2)
+            self.assertEqual(markdown.count("<img "), 3)
+            self.assertEqual(markdown.count("<a href="), 3)
+            self.assertIn('src="photos/photo 1.jpg"', markdown)
+            self.assertIn('<meta charset="utf-8">', html)
+            self.assertIn("max-width:860px", html)
+            self.assertIn('<a class="photo hero"', html)
+            self.assertIn('href="photos/photo 1.jpg"', html)
+            self.assertIn("Content-Security-Policy", html)
+            self.assertIn(
+                ".photo img{display:block;height:100%;max-height:520px;object-fit:contain",
+                html,
+            )
+            self.assertNotIn("object-fit:cover", html)
+            self.assertIn("connect-src 'none'", html)
+            self.assertIn("data-lightbox", html)
+            self.assertNotIn("data-print", html)
+            self.assertNotIn("@media print", html)
+            self.assertNotIn("window.print()", html)
+            self.assertIn("<script>", html)
+            self.assertNotIn("<script src=", html)
+
     def test_standalone_photos_are_grouped_by_week_separately_from_journey(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -264,6 +313,14 @@ class ArchiveExporterTests(unittest.TestCase):
             self.assertIn('class="weekly-photo"', html)
             self.assertIn(".weekly-photo .photo{min-height:180px}", html)
             self.assertNotIn(".weekly-photo .photo{aspect-ratio", html)
+            gallery_ids = re.findall(
+                r'<a class="photo(?: [^"]*)?"[^>]+data-gallery="([^"]+)"', html
+            )
+            self.assertEqual(len(gallery_ids), 4)
+            self.assertEqual(gallery_ids[0], gallery_ids[1])
+            self.assertNotEqual(gallery_ids[1], gallery_ids[2])
+            self.assertNotEqual(gallery_ids[2], gallery_ids[3])
+            self.assertIn('event.key === "ArrowRight"', html)
             self.assertIn("01 January 2024, 10:00 | Monday caption", html)
             self.assertNotRegex(html, r'(?:src|href)="https?://')
             self.assertNotIn("fetch(", html)
