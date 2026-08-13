@@ -23,6 +23,7 @@ import piexif
 import piexif.helper
 
 from famly_fetch.api_client import ApiClient
+from famly_fetch.archive import ArchiveExporter
 from famly_fetch.file import File
 from famly_fetch.image import BaseImage, Image, SecretImage
 from famly_fetch.video import Video
@@ -45,6 +46,7 @@ class FamlyDownloader:
         filename_pattern: str = "%FP-%Y-%m-%d_%H-%M-%S-%ID",
         include_files: bool = False,
         include_videos: bool = False,
+        export_text: bool = False,
     ):
         self._pictures_folder: Path = pictures_folder
         self._pictures_folder.mkdir(parents=True, exist_ok=True)
@@ -57,6 +59,7 @@ class FamlyDownloader:
         self.state_file = state_file
         self.include_files = include_files
         self.include_videos = include_videos
+        self.archive = ArchiveExporter(self._pictures_folder) if export_text else None
         self.downloaded_images = self.load_state()
 
         self._apiClient = ApiClient(
@@ -64,6 +67,29 @@ class FamlyDownloader:
         )
         if not access_token:
             self._apiClient.login(email, password)
+
+    @staticmethod
+    def _remote_id(item: dict, *keys: str) -> str | None:
+        for key in keys:
+            value = item.get(key)
+            if value:
+                return str(value)
+        return None
+
+    def _archive_media(
+        self,
+        media_id: str,
+        kind: str,
+        path: Path,
+        filename: str | None = None,
+    ) -> dict | None:
+        if not self.archive:
+            return None
+        return self.archive.media(media_id, kind, path, filename)
+
+    def save_archive(self):
+        if self.archive:
+            self.archive.save()
 
     def load_state(self):
         if self.state_file.exists():
@@ -262,12 +288,17 @@ class FamlyDownloader:
         click.echo(f"Found {len(conv_ids)} conversations")
 
         for conv_id in reversed(conv_ids):
+            conversation_id = str(conv_id["conversationId"])
             conversation = self._apiClient.make_api_request(
-                "GET", "/api/v2/conversations/%s" % (conv_id["conversationId"])
+                "GET", "/api/v2/conversations/%s" % conversation_id
             )
             for msg in reversed(conversation["messages"]):
-                text = msg["body"] + " - " + msg["author"]["title"]
+                body = msg.get("body") or ""
+                author = (msg.get("author") or {}).get("title")
+                text = body + (" - " + author if author else "")
                 date = msg["createdAt"]
+                archived_media = []
+                should_stop = False
                 for img_dict in msg["images"]:
                     img = Image.from_dict(
                         img_dict,
@@ -278,6 +309,9 @@ class FamlyDownloader:
                     click.echo(f" - image {img.img_id} from message at {img.date}")
 
                     file_path = self.download_file_path(img, "message")
+                    archive_item = self._archive_media(img.img_id, "photo", file_path)
+                    if archive_item:
+                        archived_media.append(archive_item)
 
                     if img.img_id in self.downloaded_images:
                         click.secho(
@@ -285,20 +319,45 @@ class FamlyDownloader:
                             fg="yellow",
                         )
                         if self.stop_on_existing:
-                            return
+                            should_stop = True
+                            break
                         else:
                             continue
                     self.fetch_image(img, file_path)
                     self.mark_as_downloaded(img.img_id)
 
-                if self.include_files:
-                    if self._download_files_from_item(
+                if self.include_files and not should_stop:
+                    should_stop = self._download_files_from_item(
                         msg.get("files") or [],
                         date=date,
                         text=text,
                         filename_prefix="message",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
+
+                if self.archive:
+                    message_id = self._remote_id(msg, "id", "messageId")
+                    self.archive.add_entry(
+                        entry_id=self.archive.entry_id(
+                            "message",
+                            message_id,
+                            conversation_id,
+                            date,
+                            body,
+                            author,
+                        ),
+                        source="message",
+                        kind="message",
+                        date=date,
+                        author=author,
+                        text=body,
+                        media=archived_media,
+                        metadata={"conversation_id": conversation_id},
+                    )
+
+                if should_stop:
+                    self.save_state()
+                    return
         self.save_state()
 
     def download_images_from_feed(self, liked_by_ids: set[str]):
@@ -445,6 +504,7 @@ class FamlyDownloader:
         date: str,
         text: str | None,
         filename_prefix: str,
+        archive_media: list[dict] | None = None,
     ) -> bool:
         """Download every File attachment on a single note/observation/message.
 
@@ -458,6 +518,17 @@ class FamlyDownloader:
             )
             click.echo(f" - file {f.file_id} ({f.name or '?'}) at {f.date}")
 
+            file_path = self.attachment_path(
+                attachment_id=f.file_id,
+                attachment_url=f.url,
+                date=f.date,
+                filename_prefix=filename_prefix,
+                original_name=f.name,
+            )
+            archive_item = self._archive_media(f.file_id, "file", file_path, f.name)
+            if archive_media is not None and archive_item:
+                archive_media.append(archive_item)
+
             if f.file_id in self.downloaded_images:
                 click.secho(
                     f"File {f.file_id} already downloaded, "
@@ -468,13 +539,6 @@ class FamlyDownloader:
                     return True
                 continue
 
-            file_path = self.attachment_path(
-                attachment_id=f.file_id,
-                attachment_url=f.url,
-                date=f.date,
-                filename_prefix=filename_prefix,
-                original_name=f.name,
-            )
             self.fetch_binary(f.url, file_path)
             self.mark_as_downloaded(f.file_id)
         return False
@@ -485,6 +549,7 @@ class FamlyDownloader:
         date: str,
         text: str | None,
         filename_prefix: str,
+        archive_media: list[dict] | None = None,
     ) -> bool:
         """Download every Video attachment on a single observation.
 
@@ -511,6 +576,17 @@ class FamlyDownloader:
 
             click.echo(f" - video {v.video_id} at {v.date}")
 
+            file_path = self.attachment_path(
+                attachment_id=v.video_id,
+                attachment_url=v.url,
+                date=v.date,
+                filename_prefix=filename_prefix,
+                original_name=None,
+            )
+            archive_item = self._archive_media(v.video_id, "video", file_path)
+            if archive_media is not None and archive_item:
+                archive_media.append(archive_item)
+
             if v.video_id in self.downloaded_images:
                 click.secho(
                     f"Video {v.video_id} already downloaded, "
@@ -521,13 +597,6 @@ class FamlyDownloader:
                     return True
                 continue
 
-            file_path = self.attachment_path(
-                attachment_id=v.video_id,
-                attachment_url=v.url,
-                date=v.date,
-                filename_prefix=filename_prefix,
-                original_name=None,
-            )
             self.fetch_binary(v.url, file_path)
             self.mark_as_downloaded(v.video_id)
         return False

@@ -86,10 +86,14 @@ list of options.
 
 ## Get Started
 
-```
-pip install famly-fetch
+```bash
+pip install -e .
 famly-fetch
 ```
+
+Installing from the checked-out directory ensures the code you reviewed is the
+code that runs. Installing the separately published PyPI package is not covered
+by this repository review.
 
 Enter your email and password when prompted, or provide an access token for authentication. Run `famly-fetch --help` to
 get full help page.
@@ -147,6 +151,42 @@ famly-fetch --include-videos
 
 Both flags can be combined with any other flags. They reuse the same `state.json` tracking and the same date-grouped folder layout as image downloads, so re-running will skip already-downloaded files. Non-image content is stored as-is without any EXIF metadata added.
 
+### Exporting messages as structured JSON
+
+Use `--export-text` with `--messages` to write `archive.json` inside the
+pictures folder:
+
+```bash
+famly-fetch --export-text --messages --include-files
+```
+
+The archive keeps message dates, authors, text, conversation IDs, and paths to
+associated local photos and files. Entries may contain only text, only media,
+or both. Re-running safely merges entries by stable ID, so separate downloads
+do not discard content already archived.
+
+Records use this general shape (fields are empty where they do not apply):
+
+```json
+{
+  "entry_id": "message:message-id",
+  "source": "message",
+  "kind": "message",
+  "date": "2026-02-19T10:30:00Z",
+  "author": {"name": "Staff member"},
+  "children": [],
+  "text": "The message text",
+  "media": [
+    {
+      "media_id": "image-id",
+      "kind": "photo",
+      "local_path": "2026-02-19/message-...jpg"
+    }
+  ],
+  "metadata": {"conversation_id": "conversation-id"}
+}
+```
+
 ### Customizing Filenames
 
 You can customize the filename format using the `--filename-pattern` option.
@@ -195,6 +235,8 @@ Options:
                                   journeys
   --include-videos                Also download videos from learning journey
                                   observations and feed posts
+  --export-text                   Write a structured archive.json alongside
+                                  downloads
   -p, --pictures-folder DIRECTORY
                                   Directory to save downloaded pictures, can
                                   be set via FAMLY_PICTURES_FOLDER env var

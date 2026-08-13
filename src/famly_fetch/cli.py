@@ -73,6 +73,11 @@ def get_version():
     help="Also download videos from learning journey observations and feed posts",
 )
 @click.option(
+    "--export-text",
+    is_flag=True,
+    help="Write a structured archive.json alongside downloads",
+)
+@click.option(
     "-p",
     "--pictures-folder",
     envvar="FAMLY_PICTURES_FOLDER",
@@ -162,6 +167,7 @@ def main(
     feed: bool,
     include_files: bool,
     include_videos: bool,
+    export_text: bool,
     pictures_folder: Path,
     stop_on_existing: bool,
     user_agent: str,
@@ -191,6 +197,7 @@ def main(
             fg="yellow",
         )
 
+    famly_downloader = None
     try:
         famly_downloader = FamlyDownloader(
             email=email,
@@ -207,6 +214,7 @@ def main(
             filename_pattern=filename_pattern,
             include_files=include_files,
             include_videos=include_videos,
+            export_text=export_text,
         )
 
         if messages:
@@ -233,6 +241,12 @@ def main(
 
     except Exception as e:
         click.secho(f"An exception occurred: {e}", fg="red")
+    finally:
+        if famly_downloader:
+            try:
+                famly_downloader.save_archive()
+            except Exception as e:
+                click.secho(f"Could not save archive: {e}", fg="red")
 
 
 if __name__ == "__main__":
