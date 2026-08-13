@@ -17,10 +17,13 @@ query LearningJourneyQuery($childId: ChildId!, $observationIds: [ObservationId!]
 }
 
 fragment ObservationDataWithNoComments on Observation {
+  id
+  version
   children {
+    id
     name
   }
-    createdBy {
+  createdBy {
     name {
       fullName
     }
@@ -29,8 +32,57 @@ fragment ObservationDataWithNoComments on Observation {
     createdAt
   }
   variant
+  settings {
+    assessmentSetting {
+      assessmentSettingsId
+      title
+    }
+  }
   remark {
     body
+    richTextBody
+    date
+    areas {
+      area {
+        frameworkId
+        id
+        parentId
+        title
+        description
+        abbr
+        color
+        placement
+        deletedAt
+        framework {
+          id
+          title
+          owner
+        }
+      }
+      refinement
+      note
+      areaRefinementSettings {
+        ageBandSetting {
+          ...AgeBandSetting
+        }
+        assessmentOptionSetting {
+          ...AssessmentOptionSetting
+        }
+      }
+    }
+    customFieldValues {
+      customFieldSetting {
+        assessmentSettingsId
+        customFieldId
+        label
+        order
+      }
+      value
+    }
+  }
+  nextStep {
+    body
+    richTextBody
   }
   images {
     height
@@ -62,4 +114,20 @@ fragment ObservationDataWithNoComments on Observation {
     url
     filename: name
   }
+}
+
+fragment AgeBandSetting on AgeBandSetting {
+  ageBandSettingId
+  assessmentSettingsId
+  from
+  to
+  label
+}
+
+fragment AssessmentOptionSetting on AssessmentOptionSetting {
+  assessmentOptionSettingId
+  assessmentSettingsId
+  backgroundColor
+  fontColor
+  label
 }

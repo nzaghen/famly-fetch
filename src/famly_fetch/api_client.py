@@ -91,6 +91,9 @@ class ApiClient:
                 "variants": [
                     "REGULAR_OBSERVATION",
                     "PARENT_OBSERVATION",
+                    "ASSESSMENT",
+                    "TWO_YEAR_PROGRESS",
+                    "UP_TO_SPEED_OBSERVATION",
                 ],
                 "first": first,
                 "next": cursor,

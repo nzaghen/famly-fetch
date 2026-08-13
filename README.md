@@ -151,19 +151,26 @@ famly-fetch --include-videos
 
 Both flags can be combined with any other flags. They reuse the same `state.json` tracking and the same date-grouped folder layout as image downloads, so re-running will skip already-downloaded files. Non-image content is stored as-is without any EXIF metadata added.
 
-### Exporting messages as structured JSON
+### Exporting text as structured JSON
 
-Use `--export-text` with `--messages` to write `archive.json` inside the
-pictures folder:
+Use `--export-text` with messages, notes, or Journey downloads to write
+`archive.json` inside the pictures folder:
 
 ```bash
-famly-fetch --export-text --messages --include-files
+famly-fetch --export-text --journey --notes --messages \
+  --include-files --include-videos
 ```
 
-The archive keeps message dates, authors, text, conversation IDs, and paths to
-associated local photos and files. Entries may contain only text, only media,
-or both. Re-running safely merges entries by stable ID, so separate downloads
-do not discard content already archived.
+The archive keeps dates, authors, text, child details, assessment results,
+conversation IDs, and paths to associated local photos, videos, and files.
+Entries may contain only text, only media, or both. Re-running safely merges
+entries by stable ID, so separate downloads do not discard content already
+archived.
+
+Journey exports include regular and parent observations, assessments, two-year
+progress checks, and up-to-speed observations. Structured assessments retain
+their configuration, learning areas, selected options or age bands, per-area
+notes, custom fields, observed date, and "what's next" text.
 
 Records use this general shape (fields are empty where they do not apply):
 

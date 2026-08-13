@@ -76,6 +76,87 @@ class FamlyDownloader:
                 return str(value)
         return None
 
+    @staticmethod
+    def _assessment_areas(observation: dict) -> list[dict]:
+        results = []
+        remark = observation.get("remark") or {}
+        for area_result in remark.get("areas") or []:
+            area = area_result.get("area") or {}
+            refinement_settings = area_result.get("areaRefinementSettings") or {}
+            age_band = refinement_settings.get("ageBandSetting") or {}
+            assessment_option = refinement_settings.get("assessmentOptionSetting") or {}
+            framework = area.get("framework") or {}
+            results.append(
+                {
+                    "area": {
+                        "id": area.get("id"),
+                        "parent_id": area.get("parentId"),
+                        "framework_id": area.get("frameworkId"),
+                        "title": area.get("title"),
+                        "description": area.get("description"),
+                        "abbreviation": area.get("abbr"),
+                        "framework": {
+                            "id": framework.get("id"),
+                            "title": framework.get("title"),
+                            "owner": framework.get("owner"),
+                        }
+                        if framework
+                        else None,
+                    },
+                    "refinement": area_result.get("refinement"),
+                    "note": area_result.get("note"),
+                    "age_band": {
+                        "id": age_band.get("ageBandSettingId"),
+                        "from": age_band.get("from"),
+                        "to": age_band.get("to"),
+                        "label": age_band.get("label"),
+                    }
+                    if age_band
+                    else None,
+                    "assessment_option": {
+                        "id": assessment_option.get("assessmentOptionSettingId"),
+                        "label": assessment_option.get("label"),
+                        "background_color": assessment_option.get("backgroundColor"),
+                        "font_color": assessment_option.get("fontColor"),
+                    }
+                    if assessment_option
+                    else None,
+                }
+            )
+        return results
+
+    @classmethod
+    def _assessment_data(cls, observation: dict) -> dict | None:
+        if observation.get("variant") not in {"ASSESSMENT", "TWO_YEAR_PROGRESS"}:
+            return None
+        assessment_setting = (observation.get("settings") or {}).get(
+            "assessmentSetting"
+        ) or {}
+        custom_fields = []
+        for field_result in (observation.get("remark") or {}).get(
+            "customFieldValues"
+        ) or []:
+            setting = field_result.get("customFieldSetting") or {}
+            custom_fields.append(
+                {
+                    "id": setting.get("customFieldId"),
+                    "assessment_settings_id": setting.get("assessmentSettingsId"),
+                    "label": setting.get("label"),
+                    "order": setting.get("order"),
+                    "value": field_result.get("value"),
+                }
+            )
+        return {
+            "setting": {
+                "id": assessment_setting.get("assessmentSettingsId"),
+                "title": assessment_setting.get("title"),
+            }
+            if assessment_setting
+            else None,
+            "areas": cls._assessment_areas(observation),
+            "custom_fields": custom_fields,
+        }
+
     def _archive_media(
         self,
         media_id: str,
@@ -141,8 +222,12 @@ class FamlyDownloader:
             click.echo(f"{len(batch['result'])} fetched.")
 
             for _i, note in enumerate(batch["result"]):
-                text = note["text"] + " - " + note["createdBy"]["name"]["fullName"]
+                author = note["createdBy"]["name"]["fullName"]
+                body = note.get("text") or ""
+                text = body + " - " + author
                 date = note["createdAt"]
+                archived_media = []
+                should_stop = False
 
                 for img_dict in note["images"]:
                     img = SecretImage.from_dict(
@@ -153,26 +238,50 @@ class FamlyDownloader:
                     click.echo(f" - image {img.img_id} from note at {img.date}")
 
                     file_path = self.download_file_path(img, f"{first_name}-note")
+                    archive_item = self._archive_media(img.img_id, "photo", file_path)
+                    if archive_item:
+                        archived_media.append(archive_item)
                     if img.img_id in self.downloaded_images:
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
                         )
                         if self.stop_on_existing:
-                            return
+                            should_stop = True
+                            break
                         else:
                             continue
                     self.fetch_image(img, file_path)
                     self.mark_as_downloaded(img.img_id)
 
-                if self.include_files:
-                    if self._download_files_from_item(
+                if self.include_files and not should_stop:
+                    should_stop = self._download_files_from_item(
                         note.get("files") or [],
                         date=date,
                         text=text,
                         filename_prefix=f"{first_name}-note",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
+
+                if self.archive:
+                    note_id = self._remote_id(note, "id", "noteId")
+                    self.archive.add_entry(
+                        entry_id=self.archive.entry_id(
+                            "note", note_id, child_id, date, body, author
+                        ),
+                        source="note",
+                        kind=note.get("noteType") or "note",
+                        date=date,
+                        published_at=note.get("publishedAt"),
+                        author=author,
+                        children=[{"id": child_id, "name": first_name}],
+                        text=body,
+                        media=archived_media,
+                    )
+
+                if should_stop:
+                    self.save_state()
+                    return
 
             next_ref = batch["next"]
 
@@ -196,12 +305,21 @@ class FamlyDownloader:
             click.echo(f"{len(batch['results'])} fetched.")
 
             for _i, observation in enumerate(batch["results"]):
-                text = (
-                    observation["remark"]["body"]
-                    + " - "
-                    + observation["createdBy"]["name"]["fullName"]
+                author = observation["createdBy"]["name"]["fullName"]
+                remark = observation.get("remark") or {}
+                body = remark.get("body") or ""
+                rich_text_body = remark.get("richTextBody")
+                observed_at = remark.get("date")
+                next_step_data = observation.get("nextStep") or {}
+                next_step = (
+                    next_step_data.get("body")
+                    or next_step_data.get("richTextBody")
+                    or None
                 )
+                text = body + " - " + author
                 date = observation["status"]["createdAt"]
+                archived_media = []
+                should_stop = False
 
                 for img_dict in observation["images"]:
                     img = SecretImage.from_dict(
@@ -212,35 +330,94 @@ class FamlyDownloader:
                     click.echo(f" - image {img.img_id} from observation at {img.date}")
 
                     file_path = self.download_file_path(img, f"{first_name}-journey")
+                    archive_item = self._archive_media(img.img_id, "photo", file_path)
+                    if archive_item:
+                        archived_media.append(archive_item)
                     if img.img_id in self.downloaded_images:
                         click.secho(
                             f"Image {img.img_id} already downloaded, {'stopping download' if self.stop_on_existing else 'skipping'}.",
                             fg="yellow",
                         )
                         if self.stop_on_existing:
-                            return
+                            should_stop = True
+                            break
                         else:
                             continue
                     self.fetch_image(img, file_path)
                     self.mark_as_downloaded(img.img_id)
 
-                if self.include_files:
-                    if self._download_files_from_item(
+                if self.include_files and not should_stop:
+                    should_stop = self._download_files_from_item(
                         observation.get("files") or [],
                         date=date,
                         text=text,
                         filename_prefix=f"{first_name}-journey",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
 
-                if self.include_videos:
-                    if self._download_videos_from_item(
+                if self.include_videos and not should_stop:
+                    should_stop = self._download_videos_from_item(
                         observation.get("videos") or [],
                         date=date,
                         text=text,
                         filename_prefix=f"{first_name}-journey",
-                    ):
-                        return
+                        archive_media=archived_media,
+                    )
+
+                if self.archive:
+                    observation_id = self._remote_id(observation, "id", "observationId")
+                    observed_children = [{"id": child_id, "name": first_name}]
+                    api_children = []
+                    for child in observation.get("children", []):
+                        name = child.get("name")
+                        if isinstance(name, dict):
+                            name = name.get("fullName") or name.get("firstName")
+                        if name:
+                            api_children.append(
+                                {
+                                    "id": child.get("id")
+                                    or (child_id if name == first_name else None),
+                                    "name": name,
+                                }
+                            )
+                    if api_children:
+                        observed_children = api_children
+                    assessment = self._assessment_data(observation)
+                    metadata = {
+                        "variant": observation.get("variant"),
+                        "version": observation.get("version"),
+                    }
+                    if rich_text_body and rich_text_body != body:
+                        metadata["rich_text_body"] = rich_text_body
+                    if not assessment:
+                        learning_areas = self._assessment_areas(observation)
+                        if learning_areas:
+                            metadata["learning_areas"] = learning_areas
+                    self.archive.add_entry(
+                        entry_id=self.archive.entry_id(
+                            "journey",
+                            observation_id,
+                            child_id,
+                            date,
+                            body,
+                            author,
+                        ),
+                        source="journey",
+                        kind=observation.get("variant") or "observation",
+                        date=date,
+                        observed_at=observed_at,
+                        author=author,
+                        children=observed_children,
+                        text=body,
+                        next_step=next_step,
+                        assessment=assessment,
+                        media=archived_media,
+                        metadata=metadata,
+                    )
+
+                if should_stop:
+                    self.save_state()
+                    return
 
             next_cursor = batch["next"]
 
