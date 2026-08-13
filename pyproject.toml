@@ -28,6 +28,7 @@ dev = ["ruff", "build", "twine"]
 
 [project.scripts]
 famly-fetch = "famly_fetch.cli:main"
+famly-fetch-markdown = "famly_fetch.markdown:main"
 
 [tool.setuptools.package-data]
 "famly_fetch.graphql" = ["*.graphql"]

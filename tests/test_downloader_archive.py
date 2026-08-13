@@ -7,6 +7,122 @@ from famly_fetch.archive import ArchiveExporter
 from famly_fetch.downloader import FamlyDownloader
 
 
+class _JourneyApi:
+    def __init__(self):
+        self.called = False
+
+    def learning_journey_query(self, child_id, cursor=None, first=100):
+        if self.called:
+            raise AssertionError("Unexpected extra page")
+        self.called = True
+        return {
+            "results": [
+                {
+                    "id": "text-only",
+                    "children": [{"name": "Riley"}],
+                    "createdBy": {"name": {"fullName": "Rachel"}},
+                    "status": {"createdAt": "2024-01-01T09:00:00+00:00"},
+                    "variant": "REGULAR_OBSERVATION",
+                    "remark": {"body": "A text-only observation"},
+                    "images": [],
+                    "files": [],
+                    "videos": [],
+                },
+                {
+                    "id": "text-and-photo",
+                    "children": [{"name": "Riley"}],
+                    "createdBy": {"name": {"fullName": "Robert"}},
+                    "status": {"createdAt": "2024-01-02T09:00:00+00:00"},
+                    "variant": "PARENT_OBSERVATION",
+                    "remark": {"body": "An observation with a photo"},
+                    "images": [
+                        {
+                            "id": "photo-1",
+                            "width": 100,
+                            "height": 100,
+                            "secret": {
+                                "prefix": "https://cdn.example",
+                                "key": "key",
+                                "path": "photo.jpg",
+                                "expires": "123",
+                                "crop": None,
+                            },
+                        }
+                    ],
+                    "files": [],
+                    "videos": [],
+                },
+                {
+                    "id": "assessment",
+                    "children": [{"id": "child-1", "name": "Riley"}],
+                    "createdBy": {"name": {"fullName": "Rose"}},
+                    "status": {"createdAt": "2024-01-03T09:00:00+00:00"},
+                    "variant": "ASSESSMENT",
+                    "version": "V2",
+                    "settings": {
+                        "assessmentSetting": {
+                            "assessmentSettingsId": "setting-1",
+                            "title": "Development Matters",
+                        }
+                    },
+                    "remark": {
+                        "body": "A summative assessment",
+                        "date": "2024-01-02T15:30:00+00:00",
+                        "areas": [
+                            {
+                                "area": {
+                                    "id": "area-1",
+                                    "frameworkId": "framework-1",
+                                    "parentId": None,
+                                    "title": "Communication and language",
+                                    "description": None,
+                                    "abbr": "CL",
+                                    "framework": {
+                                        "id": "framework-1",
+                                        "title": "EYFS",
+                                        "owner": "Famly",
+                                    },
+                                },
+                                "refinement": None,
+                                "note": "Confident progress",
+                                "areaRefinementSettings": {
+                                    "ageBandSetting": {
+                                        "ageBandSettingId": "band-1",
+                                        "from": 36,
+                                        "to": 48,
+                                        "label": "36–48 months",
+                                    },
+                                    "assessmentOptionSetting": {
+                                        "assessmentOptionSettingId": "option-1",
+                                        "label": "Progressing well",
+                                        "backgroundColor": "#ffffff",
+                                        "fontColor": "#000000",
+                                    },
+                                },
+                            }
+                        ],
+                        "customFieldValues": [
+                            {
+                                "customFieldSetting": {
+                                    "assessmentSettingsId": "setting-1",
+                                    "customFieldId": "field-1",
+                                    "label": "Key person summary",
+                                    "order": 1,
+                                },
+                                "value": "Ready for the next challenge",
+                            }
+                        ],
+                    },
+                    "nextStep": {"body": "Practise longer conversations"},
+                    "images": [],
+                    "files": [],
+                    "videos": [],
+                },
+            ],
+            "next": None,
+        }
+
+
 class _ParentPostApi:
     def __init__(self):
         self.calls = 0
@@ -78,3 +194,75 @@ class DownloaderArchiveTests(unittest.TestCase):
             self.assertNotIn(
                 "Another child's post", (root / "archive.json").read_text()
             )
+
+    def test_journey_keeps_text_only_entry_and_links_photo_to_its_post(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloader = FamlyDownloader.__new__(FamlyDownloader)
+            downloader._pictures_folder = root
+            downloader.stop_on_existing = False
+            downloader.latitude = None
+            downloader.longitude = None
+            downloader.text_comments = True
+            downloader.filename_pattern = "%FP-%Y-%m-%d_%H-%M-%S-%ID"
+            downloader.state_file = root / "state.json"
+            downloader.include_files = False
+            downloader.include_videos = False
+            downloader.downloaded_images = {}
+            downloader.archive = ArchiveExporter(root)
+            downloader._apiClient = _JourneyApi()
+
+            def fake_fetch_image(_image, file_path):
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_bytes(b"photo")
+
+            downloader.fetch_image = fake_fetch_image
+
+            downloader.download_images_from_learning_journey("child-1", "Riley")
+            downloader.save_archive()
+
+            payload = json.loads((root / "archive.json").read_text())
+            self.assertEqual(len(payload["entries"]), 3)
+
+            text_only, with_photo, assessment = payload["entries"]
+            self.assertEqual(text_only["text"], "A text-only observation")
+            self.assertEqual(text_only["media"], [])
+            self.assertEqual(with_photo["text"], "An observation with a photo")
+            self.assertEqual(with_photo["media"][0]["media_id"], "photo-1")
+            self.assertEqual(with_photo["media"][0]["kind"], "photo")
+            self.assertTrue((root / with_photo["media"][0]["local_path"]).exists())
+            self.assertEqual(assessment["kind"], "ASSESSMENT")
+            self.assertEqual(
+                assessment["assessment"]["setting"]["title"],
+                "Development Matters",
+            )
+            self.assertEqual(
+                assessment["assessment"]["areas"][0]["assessment_option"]["label"],
+                "Progressing well",
+            )
+            self.assertEqual(
+                assessment["assessment"]["custom_fields"][0]["value"],
+                "Ready for the next challenge",
+            )
+            self.assertEqual(assessment["next_step"], "Practise longer conversations")
+
+            markdown = (root / "archive.md").read_text()
+            self.assertLess(
+                markdown.index("A text-only observation"),
+                markdown.index("An observation with a photo"),
+            )
+            self.assertIn("Written by: Rachel", markdown)
+            self.assertIn("Child: Riley", markdown)
+            self.assertIn("![Photo 1]", markdown)
+            self.assertIn("### Assessment", markdown)
+            self.assertIn("Configuration: Development Matters", markdown)
+            self.assertIn("Communication and language", markdown)
+            self.assertIn("Progressing well", markdown)
+            self.assertIn("Confident progress", markdown)
+            self.assertIn("Key person summary", markdown)
+            self.assertIn("### What's next", markdown)
+            self.assertNotIn("— Journey", markdown)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -151,10 +151,15 @@ famly-fetch --include-videos
 
 Both flags can be combined with any other flags. They reuse the same `state.json` tracking and the same date-grouped folder layout as image downloads, so re-running will skip already-downloaded files. Non-image content is stored as-is without any EXIF metadata added.
 
-### Exporting text as structured JSON
+### Exporting text and a readable local archive
 
-Use `--export-text` with messages, notes, or Journey downloads to write
-`archive.json` inside the pictures folder:
+Use `--export-text` with messages, notes, or Journey downloads to write two
+files inside the pictures folder:
+
+- `archive.json` contains structured entries with dates, authors, child details,
+  text, assessment results, and paths to associated local media.
+- `archive.md` presents those entries from oldest to newest, with photos beneath
+  the post they belong to.
 
 ```bash
 famly-fetch --export-text --journey --notes --messages \
@@ -193,6 +198,24 @@ photos, add `--no-tagged`:
 ```bash
 famly-fetch --no-tagged --export-text --tagged-post-text \
   --pictures-folder pictures
+```
+
+Standalone tagged photos are grouped into one grid per calendar week in
+Markdown. Their exact dates and captions remain visible, while Journey
+observations and text posts remain separate sections. When a feed post contains
+one of those tagged photo IDs, its body appears once as the week's description.
+This presentation does not alter the individual entries in `archive.json`.
+
+Single photos use normal Markdown images. Posts with several photos use a
+clickable, dependency-free table layout so the complete portrait or landscape
+image remains visible. Structured assessment details and "what's next" text are
+shown below the observation narrative.
+
+Regenerate Markdown directly from the saved JSON without contacting Famly:
+
+```bash
+famly-fetch-markdown pictures/archive.json
+famly-fetch-markdown pictures/archive.json --output family-archive.md
 ```
 
 Records use this general shape (fields are empty where they do not apply):
@@ -267,8 +290,8 @@ Options:
                                   journeys
   --include-videos                Also download videos from learning journey
                                   observations and feed posts
-  --export-text                   Write a structured archive.json alongside
-                                  downloads
+  --export-text                   Write a structured archive.json and
+                                  chronological archive.md alongside downloads
   -p, --pictures-folder DIRECTORY
                                   Directory to save downloaded pictures, can
                                   be set via FAMLY_PICTURES_FOLDER env var

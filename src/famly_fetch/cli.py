@@ -80,7 +80,7 @@ def get_version():
 @click.option(
     "--export-text",
     is_flag=True,
-    help="Write a structured archive.json alongside downloads",
+    help="Write structured archive.json and chronological archive.md files alongside downloads",
 )
 @click.option(
     "-p",
