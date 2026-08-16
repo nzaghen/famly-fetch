@@ -121,6 +121,11 @@ provided with `--recovery-code` or `FAMLY_RECOVERY_CODE` instead. Do not put
 passwords, authenticator codes, recovery codes, or access tokens directly in
 shell history.
 
+For Bright Horizons accounts, the downloader first uses the same login-discovery
+endpoint as the Family App and automatically selects its legacy or user-context
+password flow. This is what allows the subsequent authenticator-app challenge
+to be returned for accounts that use the legacy flow.
+
 Initial two-factor setup, including scanning the QR code, must be completed in
 the Famly or Bright Horizons web app. The downloader supports subsequent login
 challenges but does not enroll a new authenticator.

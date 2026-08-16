@@ -7,7 +7,11 @@ from collections.abc import Callable
 
 from importlib_resources import files
 
-from famly_fetch.network import open_famly_api, validate_api_base_url
+from famly_fetch.network import (
+    BRIGHT_HORIZONS_API_BASE,
+    open_famly_api,
+    validate_api_base_url,
+)
 
 
 class GraphQLResponseError(RuntimeError):
@@ -97,6 +101,41 @@ class ApiClient:
             raise AuthenticationError("Famly returned no challenge result")
         self._accept_authentication_result(answer_result, None)
 
+    def _uses_legacy_password_authentication(self, email: str) -> bool:
+        """Discover the password-authentication mode used by Bright Horizons."""
+
+        if self._base != BRIGHT_HORIZONS_API_BASE:
+            return False
+
+        payload = self.make_api_request(
+            "POST", "/api/v2/logins/exists", body={"email": email}
+        )
+        if not isinstance(payload, list):
+            raise AuthenticationError(
+                "Bright Horizons returned an invalid login-discovery response"
+            )
+
+        logins = [login for login in payload if isinstance(login, dict)]
+        existing_logins = [login for login in logins if login.get("exists")]
+        if not existing_logins:
+            raise AuthenticationError(
+                "No Bright Horizons login was found for that email address"
+            )
+
+        if any(login.get("mustUseOidc") for login in existing_logins):
+            raise AuthenticationError(
+                "This Bright Horizons account requires browser single sign-on; "
+                "use --access-token instead"
+            )
+        login = existing_logins[0]
+        if not login.get("passwordLoginAvailable", True):
+            raise AuthenticationError(
+                "Password login is not available for this Bright Horizons account; "
+                "use --access-token instead"
+            )
+
+        return not bool(login.get("useUserContextAuthentication"))
+
     def login(
         self,
         email,
@@ -114,13 +153,14 @@ class ApiClient:
             Exception: If the server returns a non-200 HTTP status code.
         """
 
+        legacy = self._uses_legacy_password_authentication(email)
         login_data = self.make_graphql_request(
             "Authenticate",
             {
                 "email": email,
                 "password": password,
                 "deviceId": self._device_id,
-                "legacy": False,
+                "legacy": legacy,
             },
         )
 

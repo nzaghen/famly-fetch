@@ -8,11 +8,13 @@ from famly_fetch.api_client import (
     AuthenticationError,
     GraphQLResponseError,
 )
+from famly_fetch.network import BRIGHT_HORIZONS_API_BASE
 
 
 class ApiClientAuthenticationTests(unittest.TestCase):
     def setUp(self):
         self.client = ApiClient.__new__(ApiClient)
+        self.client._base = "https://app.famly.co"
         self.client._access_token = None
         self.client._device_id = "device-1"
 
@@ -104,6 +106,100 @@ class ApiClientAuthenticationTests(unittest.TestCase):
                 "password",
                 challenge_resolver=lambda challenge: {},
             )
+
+    def test_bright_horizons_discovers_legacy_authentication_before_login(self):
+        self.client._base = BRIGHT_HORIZONS_API_BASE
+        calls = []
+
+        def api_request(method, path, body=None, params=None):
+            calls.append((method, path, body))
+            return [
+                {
+                    "exists": True,
+                    "local": True,
+                    "passwordLoginAvailable": True,
+                    "useUserContextAuthentication": False,
+                }
+            ]
+
+        def graphql_request(method, variables):
+            calls.append((method, variables))
+            return {
+                "me": {
+                    "authenticateWithPassword": {
+                        "__typename": "AuthenticationSucceeded",
+                        "accessToken": "access-token",
+                    }
+                }
+            }
+
+        self.client.make_api_request = api_request
+        self.client.make_graphql_request = graphql_request
+
+        self.client.login("parent@example.com", "password")
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "POST",
+                    "/api/v2/logins/exists",
+                    {"email": "parent@example.com"},
+                ),
+                (
+                    "Authenticate",
+                    {
+                        "email": "parent@example.com",
+                        "password": "password",
+                        "deviceId": "device-1",
+                        "legacy": True,
+                    },
+                ),
+            ],
+        )
+
+    def test_bright_horizons_keeps_user_context_authentication_when_enabled(self):
+        self.client._base = BRIGHT_HORIZONS_API_BASE
+        self.client.make_api_request = lambda *args, **kwargs: [
+            {
+                "exists": True,
+                "local": True,
+                "passwordLoginAvailable": True,
+                "useUserContextAuthentication": True,
+            }
+        ]
+        captured = {}
+
+        def graphql_request(method, variables):
+            captured.update(variables)
+            return {
+                "me": {
+                    "authenticateWithPassword": {
+                        "__typename": "AuthenticationSucceeded",
+                        "accessToken": "access-token",
+                    }
+                }
+            }
+
+        self.client.make_graphql_request = graphql_request
+
+        self.client.login("parent@example.com", "password")
+
+        self.assertFalse(captured["legacy"])
+
+    def test_bright_horizons_reports_browser_only_login(self):
+        self.client._base = BRIGHT_HORIZONS_API_BASE
+        self.client.make_api_request = lambda *args, **kwargs: [
+            {
+                "exists": True,
+                "local": True,
+                "passwordLoginAvailable": False,
+                "mustUseOidc": True,
+            }
+        ]
+
+        with self.assertRaisesRegex(AuthenticationError, "single sign-on"):
+            self.client.login("parent@example.com", "password")
 
 
 class ApiClientJourneyTests(unittest.TestCase):
