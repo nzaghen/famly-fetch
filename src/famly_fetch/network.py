@@ -13,6 +13,13 @@ BRIGHT_HORIZONS_APP_HOST = "familyapp.brighthorizons.co.uk"
 BRIGHT_HORIZONS_API_HOST = "famlyapi.familyapp.brighthorizons.co.uk"
 BRIGHT_HORIZONS_API_BASE = f"https://{BRIGHT_HORIZONS_API_HOST}"
 BRIGHT_HORIZONS_MEDIA_HOST = "img.familyapp.brighthorizons.co.uk"
+BRIGHT_HORIZONS_VIDEO_HOST = (
+    "brighthorizons-video-storage.s3.eu-central-1.amazonaws.com"
+)
+BRIGHT_HORIZONS_MEDIA_HOSTS = {
+    BRIGHT_HORIZONS_MEDIA_HOST,
+    BRIGHT_HORIZONS_VIDEO_HOST,
+}
 
 API_BASES_BY_HOST = {
     "app.famly.co": OFFICIAL_FAMLY_API_BASE,
@@ -71,7 +78,7 @@ def validate_media_url(url: str) -> str:
 
     parts, hostname = _url_parts(url, "Famly media")
     is_famly_host = hostname == FAMLY_DOMAIN or hostname.endswith(f".{FAMLY_DOMAIN}")
-    if not is_famly_host and hostname != BRIGHT_HORIZONS_MEDIA_HOST:
+    if not is_famly_host and hostname not in BRIGHT_HORIZONS_MEDIA_HOSTS:
         raise NetworkPolicyError(f"Blocked unsupported media host: {hostname}")
     if parts.fragment:
         raise NetworkPolicyError("Blocked Famly media URL containing a fragment")

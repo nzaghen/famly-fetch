@@ -211,16 +211,17 @@ famly-fetch enforces a strict outbound-network policy:
   API origin; arbitrary self-hosted or lookalike hosts remain blocked.
 - Images, videos, and attachments can be downloaded only from `famly.co`, an
   HTTPS subdomain such as `img.famly.co`, or the exact Bright Horizons media
-  host `img.familyapp.brighthorizons.co.uk`.
+  hosts `img.familyapp.brighthorizons.co.uk` and
+  `brighthorizons-video-storage.s3.eu-central-1.amazonaws.com`.
 - Every redirect and the final response URL are checked against the same policy.
 - Environment-configured HTTP and HTTPS proxies are disabled so credentials and
   downloads cannot be routed through another service.
 - Remote media URLs and credentials are not stored in `archive.json` or
   `archive.md`.
 
-If Famly returns an Amazon S3, CloudFront, or any other unsupported URL, the
-download is deliberately blocked before connecting. The command reports the
-blocked hostname and saves whatever archive data it had safely processed so far.
+Other Amazon S3, CloudFront, or unsupported URLs are deliberately blocked before
+connecting. The command reports the blocked hostname and saves whatever archive
+data it had safely processed so far.
 
 The production Dockerfile also installs the checked-out local source rather than
 downloading a potentially different `famly-fetch` package from PyPI.

@@ -52,6 +52,7 @@ class NetworkPolicyTests(unittest.TestCase):
             "https://static.famly.co/file.pdf",
             "https://famly.co/file",
             "https://img.familyapp.brighthorizons.co.uk/image.jpg",
+            "https://brighthorizons-video-storage.s3.eu-central-1.amazonaws.com/video.mp4",
         ]
         for url in allowed:
             with self.subTest(url=url):
@@ -62,6 +63,9 @@ class NetworkPolicyTests(unittest.TestCase):
             "https://famly.co.evil.example/image.jpg",
             "https://examplefamly.co/image.jpg",
             "https://bucket.s3.amazonaws.com/image.jpg",
+            "https://brighthorizons-video-storage.s3.amazonaws.com/video.mp4",
+            "https://brighthorizons-video-storage.s3.eu-west-1.amazonaws.com/video.mp4",
+            "https://brighthorizons-video-storage.s3.eu-central-1.amazonaws.com.evil.example/video.mp4",
             "https://example.cloudfront.net/image.jpg",
             "https://img.famly.co:8443/image.jpg",
             "https://cdn.brighthorizons.co.uk/image.jpg",
