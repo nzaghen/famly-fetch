@@ -60,6 +60,10 @@ class ApiClient:
         self._device_id = get_device_id()
         self._access_token = access_token
         self._base = validate_api_base_url(base_url)
+        self._login_email: str | None = None
+        self._login_password: str | None = None
+        self._challenge_resolver: ChallengeResolver | None = None
+        self._reauthenticating = False
 
     @staticmethod
     def _authentication_failure(result: dict) -> AuthenticationError:
@@ -168,6 +172,27 @@ class ApiClient:
         if not isinstance(result, dict):
             raise AuthenticationError("Famly returned no authentication result")
         self._accept_authentication_result(result, challenge_resolver)
+        self._login_email = email
+        self._login_password = password
+        self._challenge_resolver = challenge_resolver
+
+    def _reauthenticate(self) -> bool:
+        email = getattr(self, "_login_email", None)
+        password = getattr(self, "_login_password", None)
+        if not email or not password or getattr(self, "_reauthenticating", False):
+            return False
+
+        self._access_token = None
+        self._reauthenticating = True
+        try:
+            self.login(
+                email,
+                password,
+                challenge_resolver=getattr(self, "_challenge_resolver", None),
+            )
+        finally:
+            self._reauthenticating = False
+        return True
 
     def get_child_notes(self, childId, cursor=None, first=10):
         data = self.make_graphql_request(
@@ -252,31 +277,41 @@ class ApiClient:
         if body:
             b = json.dumps(body).encode("utf-8")
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._user_agent:
-            headers["User-Agent"] = self._user_agent
-
-        # If we already have the token, use it
-        if self._access_token:
-            headers["x-famly-accesstoken"] = self._access_token
-
         url = self._base + path
 
         if params:
             query_string = urllib.parse.urlencode(params)
             url += "?" + query_string
 
-        req = urllib.request.Request(url=url, headers=headers, method=method, data=b)
-        try:
-            with open_famly_api(req) as f:
-                body = f.read().decode("utf-8")
-                if f.status != 200:
-                    raise Exception(f"Broken! {body}")
+        for attempt in range(2):
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._user_agent:
+                headers["User-Agent"] = self._user_agent
+            if self._access_token:
+                headers["x-famly-accesstoken"] = self._access_token
 
-                return json.loads(body)
-        except urllib.error.HTTPError:
-            # Preserve the failure so the CLI returns a non-zero exit status.
-            raise
+            req = urllib.request.Request(
+                url=url, headers=headers, method=method, data=b
+            )
+            try:
+                with open_famly_api(req) as f:
+                    response_body = f.read().decode("utf-8")
+                    if f.status != 200:
+                        raise Exception(f"Broken! {response_body}")
+                    return json.loads(response_body)
+            except urllib.error.HTTPError as error:
+                authentication_expired = (
+                    attempt == 0
+                    and error.code in {401, 403}
+                    and bool(self._access_token)
+                )
+                if not authentication_expired:
+                    raise
+                error.close()
+                if not self._reauthenticate():
+                    raise
+
+        raise RuntimeError("Famly request retry ended unexpectedly")
 
     def feed(
         self,

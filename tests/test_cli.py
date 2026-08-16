@@ -67,6 +67,17 @@ class AuthenticationChallengeTests(unittest.TestCase):
         self.assertIsNone(answer["twoFactorCode"])
         self.assertEqual(answer["recoveryCode"], "recovery-code")
 
+    def test_supplied_authenticator_code_is_not_reused_after_reauthentication(self):
+        resolver = _authentication_challenge_resolver("context-riley", "012345", None)
+
+        first_answer = resolver(self.challenge)
+        with patch("famly_fetch.cli.click.prompt", return_value="654321") as prompt:
+            second_answer = resolver(self.challenge)
+
+        self.assertEqual(first_answer["twoFactorCode"], 12345)
+        self.assertEqual(second_answer["twoFactorCode"], 654321)
+        prompt.assert_called_once()
+
 
 class _Downloader:
     latest = None

@@ -78,7 +78,11 @@ def _authentication_challenge_resolver(
     two_factor_code: str | None,
     recovery_code: str | None,
 ):
+    unused_two_factor_code = two_factor_code
+    unused_recovery_code = recovery_code
+
     def resolve(challenge: dict) -> dict:
+        nonlocal unused_two_factor_code, unused_recovery_code
         choices = challenge.get("choices") or []
         if not choices:
             raise click.ClickException("Famly returned no available login contexts")
@@ -145,14 +149,18 @@ def _authentication_challenge_resolver(
         submitted_two_factor_code = None
         submitted_recovery_code = None
         if selected.get("requiresTwoFactor"):
-            if recovery_code:
-                submitted_recovery_code = recovery_code
+            if unused_recovery_code:
+                submitted_recovery_code = unused_recovery_code
+                unused_recovery_code = None
             else:
-                code = two_factor_code or click.prompt(
-                    "Enter the code from your authenticator app",
-                    hide_input=True,
-                    type=str,
-                )
+                code = unused_two_factor_code
+                unused_two_factor_code = None
+                if not code:
+                    code = click.prompt(
+                        "Enter the code from your authenticator app",
+                        hide_input=True,
+                        type=str,
+                    )
                 try:
                     submitted_two_factor_code = int(code)
                 except (TypeError, ValueError) as error:

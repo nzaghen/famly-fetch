@@ -130,6 +130,12 @@ Initial two-factor setup, including scanning the QR code, must be completed in
 the Famly or Bright Horizons web app. The downloader supports subsequent login
 challenges but does not enroll a new authenticator.
 
+Long downloads can outlive an access token. If an authenticated request then
+returns 401 or 403, the downloader signs in again and retries that request once.
+Accounts using two-factor authentication are prompted for a fresh authenticator
+code. Login credentials are retained only in process memory for this retry and
+are never written to the archive or state file.
+
 If the login contains more than one child, use `--child` with an exact child name
 or Famly child ID. Use a separate output folder for each child so their archives
 and download state remain independent:

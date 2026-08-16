@@ -1,7 +1,7 @@
 import io
 import unittest
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from famly_fetch.api_client import (
     ApiClient,
@@ -200,6 +200,47 @@ class ApiClientAuthenticationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AuthenticationError, "single sign-on"):
             self.client.login("parent@example.com", "password")
+
+    def test_expired_authenticated_request_reauthenticates_and_retries_once(self):
+        self.client._base = "https://app.famly.co"
+        self.client._user_agent = "test"
+        self.client._access_token = "expired-token"
+        self.client._login_email = "parent@example.com"
+        self.client._login_password = "password"
+        self.client._challenge_resolver = None
+        self.client._reauthenticating = False
+
+        def login(email, password, challenge_resolver=None):
+            self.client._access_token = "fresh-token"
+
+        self.client.login = Mock(side_effect=login)
+        forbidden = urllib.error.HTTPError(
+            "https://app.famly.co/api/test",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b"forbidden"),
+        )
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.status = 200
+        response.read.return_value = b'{"result": "ok"}'
+
+        with patch(
+            "famly_fetch.api_client.open_famly_api",
+            side_effect=[forbidden, response],
+        ) as open_request:
+            result = self.client.make_api_request("GET", "/api/test")
+
+        self.assertEqual(result, {"result": "ok"})
+        self.client.login.assert_called_once_with(
+            "parent@example.com", "password", challenge_resolver=None
+        )
+        self.assertEqual(
+            open_request.call_args_list[1].args[0].get_header("X-famly-accesstoken"),
+            "fresh-token",
+        )
 
 
 class ApiClientJourneyTests(unittest.TestCase):
