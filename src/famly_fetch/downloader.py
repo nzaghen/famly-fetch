@@ -258,9 +258,7 @@ class FamlyDownloader:
         return {x["loginId"] for x in relations if x["loginId"]}
 
     def download_images_from_notes(self, child_id, first_name):
-        click.secho(
-            f"Downloading learning journey images for {first_name}...", fg="green"
-        )
+        click.secho(f"Downloading child notes for {first_name}...", fg="green")
         next_ref = None
 
         while True:

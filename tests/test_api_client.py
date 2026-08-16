@@ -305,6 +305,21 @@ class ApiClientJourneyTests(unittest.TestCase):
             ],
         )
 
+    def test_child_notes_uses_the_current_note_id_field(self):
+        client = ApiClient.__new__(ApiClient)
+        captured = {}
+
+        def api_request(method, path, body=None, params=None):
+            captured.update(body)
+            return {"data": {"childNotes": {"result": [], "next": None}}}
+
+        client.make_api_request = api_request
+
+        client.get_child_notes("child-1", first=100)
+
+        self.assertIn("id: noteId", captured["query"])
+        self.assertNotIn("\n  id\n", captured["query"])
+
 
 if __name__ == "__main__":
     unittest.main()

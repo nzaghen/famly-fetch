@@ -19,7 +19,7 @@ query GetChildNotes($childId: ChildId!, $cursor: ChildNoteCursor, $limit: Int!, 
 }
 
 fragment Note on ChildNote {
-  id
+  id: noteId
   noteType
   createdBy {
     name {
