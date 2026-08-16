@@ -3,6 +3,7 @@ import json
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 
 from importlib_resources import files
 
@@ -11,6 +12,13 @@ from famly_fetch.network import open_famly_api, validate_api_base_url
 
 class GraphQLResponseError(RuntimeError):
     """Raised when Famly returns GraphQL errors in an HTTP 200 response."""
+
+
+class AuthenticationError(RuntimeError):
+    """Raised when Famly rejects or cannot complete authentication."""
+
+
+ChallengeResolver = Callable[[dict], dict]
 
 
 def get_device_id() -> str:
@@ -49,7 +57,52 @@ class ApiClient:
         self._access_token = access_token
         self._base = validate_api_base_url(base_url)
 
-    def login(self, email, password):
+    @staticmethod
+    def _authentication_failure(result: dict) -> AuthenticationError:
+        details = result.get("errorDetails") or result.get("errorTitle")
+        return AuthenticationError(str(details or "Famly authentication failed"))
+
+    def _accept_authentication_result(
+        self,
+        result: dict,
+        challenge_resolver: ChallengeResolver | None,
+    ) -> None:
+        result_type = result.get("__typename")
+        if result_type == "AuthenticationSucceeded":
+            access_token = result.get("accessToken")
+            if not access_token:
+                raise AuthenticationError(
+                    "Famly reported a successful login without an access token"
+                )
+            self._access_token = access_token
+            return
+        if result_type == "AuthenticationFailed":
+            raise self._authentication_failure(result)
+        if result_type != "AuthenticationChallenged":
+            raise AuthenticationError("Famly returned an unknown authentication result")
+        if challenge_resolver is None:
+            raise AuthenticationError(
+                "Famly requires a login context or two-factor authentication"
+            )
+        if result.get("requiredMfaSetup"):
+            raise AuthenticationError(
+                "This account must finish two-factor setup in the Famly web app first"
+            )
+
+        answer_data = self.make_graphql_request(
+            "AnswerChallenge", challenge_resolver(result)
+        )
+        answer_result = answer_data.get("me", {}).get("answerChallenge")
+        if not isinstance(answer_result, dict):
+            raise AuthenticationError("Famly returned no challenge result")
+        self._accept_authentication_result(answer_result, None)
+
+    def login(
+        self,
+        email,
+        password,
+        challenge_resolver: ChallengeResolver | None = None,
+    ):
         """
         Authenticate with the Famly API and store the access token for future requests.
 
@@ -71,7 +124,10 @@ class ApiClient:
             },
         )
 
-        self._access_token = login_data["me"]["authenticateWithPassword"]["accessToken"]
+        result = login_data.get("me", {}).get("authenticateWithPassword")
+        if not isinstance(result, dict):
+            raise AuthenticationError("Famly returned no authentication result")
+        self._accept_authentication_result(result, challenge_resolver)
 
     def get_child_notes(self, childId, cursor=None, first=10):
         data = self.make_graphql_request(

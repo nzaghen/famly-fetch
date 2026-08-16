@@ -1,0 +1,33 @@
+mutation AnswerChallenge(
+    $deviceId: DeviceId!
+    $loginId: LoginId!
+    $expiresAt: Long!
+    $userContextId: String!
+    $hmac: String!
+    $twoFactorCode: Int
+    $recoveryCode: String
+) {
+    me {
+        answerChallenge(
+            deviceId: $deviceId
+            loginId: $loginId
+            expiresAt: $expiresAt
+            userContextId: $userContextId
+            hmac: $hmac
+            twoFactorCode: $twoFactorCode
+            recoveryCode: $recoveryCode
+            setupMfaInput: null
+        ) {
+            __typename
+            ... on AuthenticationSucceeded {
+                accessToken
+                deviceId
+            }
+            ... on AuthenticationFailed {
+                status
+                errorDetails
+                errorTitle
+            }
+        }
+    }
+}

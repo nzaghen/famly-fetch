@@ -5,7 +5,67 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from famly_fetch.cli import main
+from famly_fetch.cli import _authentication_challenge_resolver, main
+
+
+class AuthenticationChallengeTests(unittest.TestCase):
+    challenge = {
+        "deviceId": "device-1",
+        "loginId": "login-1",
+        "expiresAt": 123456,
+        "choices": [
+            {
+                "context": {
+                    "id": "context-riley",
+                    "target": {
+                        "__typename": "PersonContextTarget",
+                        "children": [
+                            {"name": {"firstName": "Riley", "fullName": "Riley R."}}
+                        ],
+                    },
+                },
+                "hmac": "signed-riley",
+                "requiresTwoFactor": True,
+            },
+            {
+                "context": {
+                    "id": "context-nursery",
+                    "target": {
+                        "__typename": "InstitutionSet",
+                        "title": "Riverside Nursery",
+                    },
+                },
+                "hmac": "signed-nursery",
+                "requiresTwoFactor": False,
+            },
+        ],
+    }
+
+    def test_selects_context_and_submits_authenticator_code(self):
+        resolver = _authentication_challenge_resolver("Riley R.", "012345", None)
+
+        self.assertEqual(
+            resolver(self.challenge),
+            {
+                "deviceId": "device-1",
+                "loginId": "login-1",
+                "expiresAt": 123456,
+                "userContextId": "context-riley",
+                "hmac": "signed-riley",
+                "twoFactorCode": 12345,
+                "recoveryCode": None,
+            },
+        )
+
+    def test_recovery_code_is_used_instead_of_authenticator_code(self):
+        resolver = _authentication_challenge_resolver(
+            "context-riley", None, "recovery-code"
+        )
+
+        answer = resolver(self.challenge)
+
+        self.assertIsNone(answer["twoFactorCode"])
+        self.assertEqual(answer["recoveryCode"], "recovery-code")
 
 
 class _Downloader:
@@ -42,6 +102,20 @@ class _Downloader:
 
 
 class ChildSelectionTests(unittest.TestCase):
+    def test_two_factor_and_recovery_codes_are_mutually_exclusive(self):
+        result = CliRunner().invoke(
+            main,
+            [
+                "--two-factor-code",
+                "123456",
+                "--recovery-code",
+                "recovery-code",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("cannot be used together", result.output)
+
     def test_no_child_selector_persists_the_combined_archive_owners(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch("famly_fetch.cli.FamlyDownloader", _Downloader):

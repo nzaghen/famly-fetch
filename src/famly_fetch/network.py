@@ -9,6 +9,17 @@ from urllib.parse import urlparse
 
 OFFICIAL_FAMLY_API_BASE = "https://app.famly.co"
 FAMLY_DOMAIN = "famly.co"
+BRIGHT_HORIZONS_APP_HOST = "familyapp.brighthorizons.co.uk"
+BRIGHT_HORIZONS_API_HOST = "famlyapi.familyapp.brighthorizons.co.uk"
+BRIGHT_HORIZONS_API_BASE = f"https://{BRIGHT_HORIZONS_API_HOST}"
+BRIGHT_HORIZONS_MEDIA_HOST = "img.familyapp.brighthorizons.co.uk"
+
+API_BASES_BY_HOST = {
+    "app.famly.co": OFFICIAL_FAMLY_API_BASE,
+    BRIGHT_HORIZONS_APP_HOST: BRIGHT_HORIZONS_API_BASE,
+    BRIGHT_HORIZONS_API_HOST: BRIGHT_HORIZONS_API_BASE,
+}
+API_HOSTS = {"app.famly.co", BRIGHT_HORIZONS_API_HOST}
 
 
 class NetworkPolicyError(RuntimeError):
@@ -35,20 +46,21 @@ def _url_parts(url: str, purpose: str):
 
 
 def validate_api_base_url(url: str) -> str:
-    """Accept only Famly's official UK production application origin."""
+    """Accept and normalize supported Famly application and API origins."""
 
     parts, hostname = _url_parts(url, "Famly API")
-    if hostname != "app.famly.co":
-        raise NetworkPolicyError(f"Blocked non-official API host: {hostname}")
+    normalized_base = API_BASES_BY_HOST.get(hostname)
+    if normalized_base is None:
+        raise NetworkPolicyError(f"Blocked unsupported API host: {hostname}")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
         raise NetworkPolicyError("Famly API base URL must not contain a path or query")
-    return OFFICIAL_FAMLY_API_BASE
+    return normalized_base
 
 
 def validate_api_url(url: str) -> str:
     parts, hostname = _url_parts(url, "Famly API")
-    if hostname != "app.famly.co":
-        raise NetworkPolicyError(f"Blocked non-official API host: {hostname}")
+    if hostname not in API_HOSTS:
+        raise NetworkPolicyError(f"Blocked unsupported API host: {hostname}")
     if parts.fragment:
         raise NetworkPolicyError("Blocked Famly API URL containing a fragment")
     return url
@@ -58,8 +70,9 @@ def validate_media_url(url: str) -> str:
     """Allow HTTPS media only on Famly-owned domains."""
 
     parts, hostname = _url_parts(url, "Famly media")
-    if hostname != FAMLY_DOMAIN and not hostname.endswith(f".{FAMLY_DOMAIN}"):
-        raise NetworkPolicyError(f"Blocked non-Famly media host: {hostname}")
+    is_famly_host = hostname == FAMLY_DOMAIN or hostname.endswith(f".{FAMLY_DOMAIN}")
+    if not is_famly_host and hostname != BRIGHT_HORIZONS_MEDIA_HOST:
+        raise NetworkPolicyError(f"Blocked unsupported media host: {hostname}")
     if parts.fragment:
         raise NetworkPolicyError("Blocked Famly media URL containing a fragment")
     return url

@@ -3,7 +3,107 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from famly_fetch.api_client import ApiClient, GraphQLResponseError
+from famly_fetch.api_client import (
+    ApiClient,
+    AuthenticationError,
+    GraphQLResponseError,
+)
+
+
+class ApiClientAuthenticationTests(unittest.TestCase):
+    def setUp(self):
+        self.client = ApiClient.__new__(ApiClient)
+        self.client._access_token = None
+        self.client._device_id = "device-1"
+
+    def test_password_authentication_accepts_an_immediate_success(self):
+        self.client.make_graphql_request = lambda method, variables: {
+            "me": {
+                "authenticateWithPassword": {
+                    "__typename": "AuthenticationSucceeded",
+                    "accessToken": "access-token",
+                }
+            }
+        }
+
+        self.client.login("parent@example.com", "password")
+
+        self.assertEqual(self.client._access_token, "access-token")
+
+    def test_password_authentication_answers_two_factor_challenge(self):
+        challenge = {
+            "__typename": "AuthenticationChallenged",
+            "deviceId": "device-1",
+            "loginId": "login-1",
+            "expiresAt": 123456,
+            "choices": [],
+        }
+        calls = []
+
+        def graphql_request(method, variables):
+            calls.append((method, variables))
+            if method == "Authenticate":
+                return {"me": {"authenticateWithPassword": challenge}}
+            return {
+                "me": {
+                    "answerChallenge": {
+                        "__typename": "AuthenticationSucceeded",
+                        "accessToken": "challenged-access-token",
+                    }
+                }
+            }
+
+        answer = {
+            "deviceId": "device-1",
+            "loginId": "login-1",
+            "expiresAt": 123456,
+            "userContextId": "context-1",
+            "hmac": "signed-choice",
+            "twoFactorCode": 123456,
+            "recoveryCode": None,
+        }
+        self.client.make_graphql_request = graphql_request
+
+        self.client.login(
+            "parent@example.com",
+            "password",
+            challenge_resolver=lambda received: (
+                answer if received is challenge else None
+            ),
+        )
+
+        self.assertEqual(calls[1], ("AnswerChallenge", answer))
+        self.assertEqual(self.client._access_token, "challenged-access-token")
+
+    def test_password_authentication_reports_rejection_details(self):
+        self.client.make_graphql_request = lambda method, variables: {
+            "me": {
+                "authenticateWithPassword": {
+                    "__typename": "AuthenticationFailed",
+                    "errorDetails": "Incorrect credentials",
+                }
+            }
+        }
+
+        with self.assertRaisesRegex(AuthenticationError, "Incorrect credentials"):
+            self.client.login("parent@example.com", "password")
+
+    def test_required_mfa_setup_must_be_completed_in_web_app(self):
+        self.client.make_graphql_request = lambda method, variables: {
+            "me": {
+                "authenticateWithPassword": {
+                    "__typename": "AuthenticationChallenged",
+                    "requiredMfaSetup": {"availableMethods": ["TOTP"]},
+                }
+            }
+        }
+
+        with self.assertRaisesRegex(AuthenticationError, "finish two-factor setup"):
+            self.client.login(
+                "parent@example.com",
+                "password",
+                challenge_resolver=lambda challenge: {},
+            )
 
 
 class ApiClientJourneyTests(unittest.TestCase):

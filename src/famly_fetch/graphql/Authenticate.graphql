@@ -57,6 +57,11 @@ fragment AuthChallenge on AuthenticationChallenged {
         }
         __typename
     }
+    requiredMfaSetup {
+        availableMethods
+        jwt
+        __typename
+    }
     __typename
 }
 

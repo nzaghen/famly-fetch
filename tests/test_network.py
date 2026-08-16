@@ -13,12 +13,23 @@ from famly_fetch.network import (
 
 
 class NetworkPolicyTests(unittest.TestCase):
-    def test_api_credentials_can_only_target_official_app_origin(self):
+    def test_api_credentials_can_only_target_supported_origins(self):
         self.assertEqual(
             validate_api_base_url("https://app.famly.co/"),
             "https://app.famly.co",
         )
+        self.assertEqual(
+            validate_api_base_url("https://familyapp.brighthorizons.co.uk/"),
+            "https://famlyapi.familyapp.brighthorizons.co.uk",
+        )
+        self.assertEqual(
+            validate_api_base_url("https://famlyapi.familyapp.brighthorizons.co.uk/"),
+            "https://famlyapi.familyapp.brighthorizons.co.uk",
+        )
         validate_api_url("https://app.famly.co/graphql?Authenticate")
+        validate_api_url(
+            "https://famlyapi.familyapp.brighthorizons.co.uk/graphql?Authenticate"
+        )
 
         blocked = [
             "http://app.famly.co",
@@ -28,16 +39,19 @@ class NetworkPolicyTests(unittest.TestCase):
             "https://user:password@app.famly.co",
             "https://img.famly.co",
             "https://app.famly.co/unexpected-base-path",
+            "https://other.brighthorizons.co.uk",
+            "https://familyapp.brighthorizons.co.uk.evil.example",
         ]
         for url in blocked:
             with self.subTest(url=url), self.assertRaises(NetworkPolicyError):
                 validate_api_base_url(url)
 
-    def test_media_allows_only_https_famly_owned_hosts(self):
+    def test_media_allows_only_explicit_https_hosts(self):
         allowed = [
             "https://img.famly.co/image.jpg",
             "https://static.famly.co/file.pdf",
             "https://famly.co/file",
+            "https://img.familyapp.brighthorizons.co.uk/image.jpg",
         ]
         for url in allowed:
             with self.subTest(url=url):
@@ -50,6 +64,8 @@ class NetworkPolicyTests(unittest.TestCase):
             "https://bucket.s3.amazonaws.com/image.jpg",
             "https://example.cloudfront.net/image.jpg",
             "https://img.famly.co:8443/image.jpg",
+            "https://cdn.brighthorizons.co.uk/image.jpg",
+            "https://img.familyapp.brighthorizons.co.uk.evil.example/image.jpg",
         ]
         for url in blocked:
             with self.subTest(url=url), self.assertRaises(NetworkPolicyError):

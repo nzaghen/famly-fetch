@@ -56,18 +56,131 @@ def _select_children(children, selector):
     )
 
 
+def _authentication_context_label(choice: dict) -> str:
+    context = choice.get("context") or {}
+    target = context.get("target") or {}
+    if target.get("__typename") == "InstitutionSet" and target.get("title"):
+        return str(target["title"])
+    if target.get("__typename") == "PersonContextTarget":
+        names = []
+        for child in target.get("children") or []:
+            name = child.get("name") or {}
+            child_name = name.get("fullName") or name.get("firstName")
+            if child_name:
+                names.append(str(child_name))
+        if names:
+            return ", ".join(names)
+    return str(context.get("id") or "Unnamed context")
+
+
+def _authentication_challenge_resolver(
+    login_context: str | None,
+    two_factor_code: str | None,
+    recovery_code: str | None,
+):
+    def resolve(challenge: dict) -> dict:
+        choices = challenge.get("choices") or []
+        if not choices:
+            raise click.ClickException("Famly returned no available login contexts")
+
+        selected = None
+        if login_context:
+            selector = login_context.strip().casefold()
+            matches = [
+                choice
+                for choice in choices
+                if selector
+                in {
+                    str((choice.get("context") or {}).get("id") or "").casefold(),
+                    _authentication_context_label(choice).casefold(),
+                }
+            ]
+            if len(matches) == 1:
+                selected = matches[0]
+            elif len(matches) > 1:
+                context_ids = ", ".join(
+                    str((choice.get("context") or {}).get("id")) for choice in matches
+                )
+                raise click.UsageError(
+                    f'More than one login context matched "{login_context}". '
+                    f"Use a context ID instead: {context_ids}"
+                )
+            else:
+                available = ", ".join(
+                    f"{_authentication_context_label(choice)} "
+                    f"({(choice.get('context') or {}).get('id')})"
+                    for choice in choices
+                )
+                raise click.UsageError(
+                    f'No login context matched "{login_context}". '
+                    f"Available contexts: {available}"
+                )
+        elif len(choices) == 1:
+            selected = choices[0]
+        else:
+            click.echo("Famly requires a login context:")
+            for index, choice in enumerate(choices, start=1):
+                click.echo(f"  {index}. {_authentication_context_label(choice)}")
+            selected = choices[
+                click.prompt(
+                    "Select login context",
+                    type=click.IntRange(1, len(choices)),
+                )
+                - 1
+            ]
+
+        context = selected.get("context") or {}
+        required_values = {
+            "deviceId": challenge.get("deviceId"),
+            "loginId": challenge.get("loginId"),
+            "expiresAt": challenge.get("expiresAt"),
+            "userContextId": context.get("id"),
+            "hmac": selected.get("hmac"),
+        }
+        if any(value is None for value in required_values.values()):
+            raise click.ClickException(
+                "Famly returned an incomplete authentication challenge"
+            )
+
+        submitted_two_factor_code = None
+        submitted_recovery_code = None
+        if selected.get("requiresTwoFactor"):
+            if recovery_code:
+                submitted_recovery_code = recovery_code
+            else:
+                code = two_factor_code or click.prompt(
+                    "Enter the code from your authenticator app",
+                    hide_input=True,
+                    type=str,
+                )
+                try:
+                    submitted_two_factor_code = int(code)
+                except (TypeError, ValueError) as error:
+                    raise click.UsageError(
+                        "The two-factor code must contain digits only"
+                    ) from error
+
+        return {
+            **required_values,
+            "twoFactorCode": submitted_two_factor_code,
+            "recoveryCode": submitted_recovery_code,
+        }
+
+    return resolve
+
+
 @click.command()
 @click.option(
     "--email",
     envvar="FAMLY_EMAIL",
-    help="Your famly.co email address, can be set via FAMLY_EMAIL env var",
+    help="Your Famly account email, can be set via FAMLY_EMAIL env var",
     metavar="EMAIL",
     type=str,
 )
 @click.option(
     "--password",
     envvar="FAMLY_PASSWORD",
-    help="Your famly.co password, can be set via FAMLY_PASSWORD env var",
+    help="Your Famly account password, can be set via FAMLY_PASSWORD env var",
     metavar="PASSWORD",
     hide_input=True,
     type=str,
@@ -75,16 +188,39 @@ def _select_children(children, selector):
 @click.option(
     "--access-token",
     envvar="FAMLY_ACCESS_TOKEN",
-    help="Your famly.co access token, can be set via FAMLY_ACCESS_TOKEN env var",
+    help="Your Famly access token, can be set via FAMLY_ACCESS_TOKEN env var",
     metavar="TOKEN",
     type=str,
 )
 @click.option(
     "--famly-base-url",
     envvar="FAMLY_BASE_URL",
-    help="Famly API base URL. The strict network policy accepts only https://app.famly.co",
+    help="Famly application or API base URL; supports Famly and Bright Horizons",
     metavar="URL",
     default="https://app.famly.co",
+    type=str,
+)
+@click.option(
+    "--login-context",
+    envvar="FAMLY_LOGIN_CONTEXT",
+    help="Login context name or ID when Famly offers more than one",
+    metavar="NAME_OR_ID",
+    type=str,
+)
+@click.option(
+    "--two-factor-code",
+    envvar="FAMLY_TWO_FACTOR_CODE",
+    help="Authenticator-app code; prompted when required if omitted",
+    metavar="CODE",
+    hide_input=True,
+    type=str,
+)
+@click.option(
+    "--recovery-code",
+    envvar="FAMLY_RECOVERY_CODE",
+    help="Famly two-factor recovery code",
+    metavar="CODE",
+    hide_input=True,
     type=str,
 )
 @click.option(
@@ -214,6 +350,9 @@ def main(
     password: str,
     access_token: str,
     famly_base_url: str,
+    login_context: str,
+    two_factor_code: str,
+    recovery_code: str,
     child_selector: str,
     no_tagged: bool,
     journey: bool,
@@ -234,10 +373,18 @@ def main(
     filename_pattern: str,
     state_file: Path,
 ):
-    """Fetch kids' images from famly.co"""
+    """Fetch kids' images from Famly."""
 
     if tagged_post_text and not export_text:
         raise click.UsageError("--tagged-post-text requires --export-text")
+    if two_factor_code and recovery_code:
+        raise click.UsageError(
+            "--two-factor-code and --recovery-code cannot be used together"
+        )
+    if access_token and (login_context or two_factor_code or recovery_code):
+        raise click.UsageError(
+            "Login-context and two-factor options cannot be used with --access-token"
+        )
     if child_selector and (messages or liked or feed):
         raise click.UsageError(
             "--child cannot be combined with --messages, --liked, or --feed "
@@ -281,6 +428,9 @@ def main(
             include_files=include_files,
             include_videos=include_videos,
             export_text=export_text,
+            challenge_resolver=_authentication_challenge_resolver(
+                login_context, two_factor_code, recovery_code
+            ),
         )
 
         if messages:

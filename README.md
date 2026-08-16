@@ -96,8 +96,34 @@ Installing from the checked-out directory ensures the code you reviewed is the
 code that runs. Installing the separately published PyPI package is not covered
 by this repository review.
 
-Enter your email and password when prompted, or provide an access token for authentication. Run `famly-fetch --help` to
-get full help page.
+Enter your email and password when prompted, or provide an access token for
+authentication. Run `famly-fetch --help` to get the full help page.
+
+### Bright Horizons and two-factor authentication
+
+The Bright Horizons Family App is a supported Famly deployment. Pass its public
+application URL; the strict network policy maps it to the matching API origin:
+
+```bash
+famly-fetch \
+  --famly-base-url https://familyapp.brighthorizons.co.uk \
+  --child Riley \
+  --journey --notes --tagged-post-text --include-files --include-videos \
+  --export-text --pictures-folder pictures-riley
+```
+
+If the account requires two-factor authentication, the command prompts for the
+current authenticator-app code only after the password has been accepted. It
+also prompts for a login context when the account offers more than one. For a
+non-interactive run, use `--login-context` with the displayed name or ID and
+provide `FAMLY_TWO_FACTOR_CODE` in the environment. A recovery code can be
+provided with `--recovery-code` or `FAMLY_RECOVERY_CODE` instead. Do not put
+passwords, authenticator codes, recovery codes, or access tokens directly in
+shell history.
+
+Initial two-factor setup, including scanning the QR code, must be completed in
+the Famly or Bright Horizons web app. The downloader supports subsequent login
+challenges but does not enroll a new authenticator.
 
 If the login contains more than one child, use `--child` with an exact child name
 or Famly child ID. Use a separate output folder for each child so their archives
@@ -163,21 +189,25 @@ The `--stop-on-existing` option is helpful if you wish to download
 images continously and just want to download what is new since last
 download.
 
-### Strict Famly-only networking
+### Strict supported-Famly networking
 
 famly-fetch enforces a strict outbound-network policy:
 
-- Email, password, access token, and API request bodies can be sent only to
-  `https://app.famly.co` over HTTPS.
-- Images, videos, and attachments can be downloaded only from `famly.co` or an
-  HTTPS subdomain such as `img.famly.co`.
+- Email, password, two-factor answers, access tokens, and API request bodies can
+  be sent only to `https://app.famly.co` or the exact Bright Horizons API origin
+  `https://famlyapi.familyapp.brighthorizons.co.uk`, over HTTPS.
+- Passing `https://familyapp.brighthorizons.co.uk` as the base URL maps to that
+  API origin; arbitrary self-hosted or lookalike hosts remain blocked.
+- Images, videos, and attachments can be downloaded only from `famly.co`, an
+  HTTPS subdomain such as `img.famly.co`, or the exact Bright Horizons media
+  host `img.familyapp.brighthorizons.co.uk`.
 - Every redirect and the final response URL are checked against the same policy.
 - Environment-configured HTTP and HTTPS proxies are disabled so credentials and
   downloads cannot be routed through another service.
 - Remote media URLs and credentials are not stored in `archive.json` or
   `archive.md`.
 
-If Famly returns an Amazon S3, CloudFront, or any other non-Famly URL, the
+If Famly returns an Amazon S3, CloudFront, or any other unsupported URL, the
 download is deliberately blocked before connecting. The command reports the
 blocked hostname and saves whatever archive data it had safely processed so far.
 
@@ -399,19 +429,24 @@ This produces filenames like: `child-name-2024-01-15_14-30-45-abc123.jpg`
 ```bash
 Usage: famly-fetch [OPTIONS]
 
-  Fetch kids' images from famly.co
+  Fetch kids' images from Famly.
 
 Options:
-  --email EMAIL                   Your famly.co email address, can be set via
+  --email EMAIL                   Your Famly account email, can be set via
                                   FAMLY_EMAIL env var
-  --password PASSWORD             Your famly.co password, can be set via
+  --password PASSWORD             Your Famly account password, can be set via
                                   FAMLY_PASSWORD env var
-  --access-token TOKEN            Your famly.co access token, can be set via
+  --access-token TOKEN            Your Famly access token, can be set via
                                   FAMLY_ACCESS_TOKEN env var
-  --famly-base-url URL            Famly API base URL. The strict network policy
-                                  accepts only https://app.famly.co
-  --child NAME_OR_ID              Process one child by exact name or Famly child
-                                  ID
+  --famly-base-url URL            Famly application or API base URL; supports
+                                  Famly and Bright Horizons
+  --login-context NAME_OR_ID      Login context name or ID when Famly offers
+                                  more than one
+  --two-factor-code CODE          Authenticator-app code; prompted when
+                                  required if omitted
+  --recovery-code CODE            Famly two-factor recovery code
+  --child NAME_OR_ID              Process one child by exact name or Famly
+                                  child ID
   --no-tagged                     Don't download tagged images
   -j, --journey                   Download images from child Learning Journey
   -n, --notes                     Download images from child notes

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from famly_fetch.api_client import ApiClient
+from famly_fetch.api_client import ApiClient, ChallengeResolver
 from famly_fetch.archive import ArchiveExporter
 from famly_fetch.file import File
 from famly_fetch.image import BaseImage, Image, SecretImage
@@ -42,6 +42,7 @@ class FamlyDownloader:
         include_files: bool = False,
         include_videos: bool = False,
         export_text: bool = False,
+        challenge_resolver: ChallengeResolver | None = None,
     ):
         self._pictures_folder: Path = pictures_folder
         self._pictures_folder.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,9 @@ class FamlyDownloader:
             base_url=famly_base_url, user_agent=user_agent, access_token=access_token
         )
         if not access_token:
-            self._apiClient.login(email, password)
+            self._apiClient.login(
+                email, password, challenge_resolver=challenge_resolver
+            )
 
     def _protect_output_folder(self):
         self._media_persistence().protect_output_folder()
